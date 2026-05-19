@@ -1,0 +1,13 @@
+# Ignorar imágenes y renders pesados
+*.png
+*.jpg
+*.jpeg
+
+# Ignorar archivos ejecutables y compilados de Pascal
+*.exe
+*.o
+fp___.err
+fp___.out
+
+# Ignorar carpetas enteras si lo necesitas (por ejemplo, si pones todo lo pesado ahí)
+# Nueva carpeta/
