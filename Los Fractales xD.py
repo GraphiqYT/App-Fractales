@@ -1,62 +1,89 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider, TextBox
-from numba import jit, prange
+from numba import njit, prange
 
 plt.rcParams['toolbar'] = 'None'
 
-@jit(nopython=True, parallel=True)
 def calcular_pixeles(ancho, alto, max_iter, x_min, x_max, y_min, y_max, tipo, it_sierp, jx, jy, modo_smooth, exp_custom=2.0):
-    x_range = np.linspace(x_min, x_max, ancho)
-    y_range = np.linspace(y_min, y_max, alto)
-    fractal = np.zeros((alto, ancho), dtype=np.float64)
-    
-    for i in prange(alto):
-        for j in range(ancho):
-            cx, cy = x_range[j], y_range[i]
-            
-            if tipo == 3: 
-                tx, ty = cx, cy
-                it = 0
-                dentro = False
-                if tx >= 0.0 and tx <= 1.0 and ty >= 0.0 and ty <= 1.0:
-                    while it < it_sierp:
-                        if (tx > 0.333333 and tx < 0.666666) and (ty > 0.333333 and ty < 0.666666):
+    x_range = np.linspace(x_min, x_max, ancho, dtype=np.float64)
+    y_range = np.linspace(y_min, y_max, alto, dtype=np.float64)
+    cx_grid, cy_grid = np.meshgrid(x_range, y_range)
+    return _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, modo_smooth, exp_custom)
+
+@njit(parallel=True, fastmath=True)
+def _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, modo_smooth, exp_custom=2.0):
+    alto, ancho = cx_grid.shape
+    fractal = np.empty((alto, ancho), dtype=np.float64)
+
+    if tipo == 3:
+        for i in prange(alto):
+            for j in range(ancho):
+                x = cx_grid[i, j]
+                y = cy_grid[i, j]
+                inside = False
+                if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+                    tx = x
+                    ty = y
+                    count = 0
+                    while count < it_sierp:
+                        if 0.333333 < tx < 0.666666 and 0.333333 < ty < 0.666666:
                             break
                         tx = (tx * 3.0) % 1.0
                         ty = (ty * 3.0) % 1.0
-                        it += 1
-                    if it == it_sierp:
-                        dentro = True
-                fractal[i, j] = 1.0 if dentro else 0.0
-            
+                        count += 1
+                    if count == it_sierp:
+                        inside = True
+                fractal[i, j] = 1.0 if inside else 0.0
+        return fractal
+
+    for i in prange(alto):
+        for j in range(ancho):
+            x = cx_grid[i, j]
+            y = cy_grid[i, j]
+            if tipo == 1:
+                zx = x
+                zy = y
+                sx = jx
+                sy = jy
             else:
-                if tipo == 1: zx, zy, sx, sy = cx, cy, jx, jy
-                else: zx, zy, sx, sy = 0.0, 0.0, cx, cy
-                
-                it = 0
+                zx = 0.0
+                zy = 0.0
+                sx = x
+                sy = y
+
+            it = 0
+            if tipo == 2:
                 while zx*zx + zy*zy <= 3000.0 and it < max_iter:
-                    if tipo == 2:
-                        nx, ny = zx*zx - zy*zy + sx, abs(2*zx*zy) + sy
-                        zx, zy = nx, ny
-                    else: 
-                        if exp_custom == 2.0:
-                            nx, ny = zx*zx - zy*zy + sx, 2*zx*zy + sy
-                            zx, zy = nx, ny
-                        else:
-                            r = np.sqrt(zx*zx + zy*zy)
-                            theta = np.arctan2(zy, zx) * exp_custom
-                            r_n = r ** exp_custom
-                            zx = r_n * np.cos(theta) + sx
-                            zy = r_n * np.sin(theta) + sy
+                    nx = zx*zx - zy*zy + sx
+                    ny = abs(2.0*zx*zy) + sy
+                    zx = nx
+                    zy = ny
                     it += 1
-                
-                if it < max_iter and modo_smooth:
-                    log_zn = np.log(zx*zx + zy*zy) / 2
-                    nu = np.log(log_zn / np.log(2)) / np.log(2)
-                    fractal[i, j] = (it + 1 - nu) / max_iter
+            else:
+                if exp_custom == 2.0:
+                    while zx*zx + zy*zy <= 3000.0 and it < max_iter:
+                        nx = zx*zx - zy*zy + sx
+                        ny = 2.0*zx*zy + sy
+                        zx = nx
+                        zy = ny
+                        it += 1
                 else:
-                    fractal[i, j] = it / max_iter
+                    while zx*zx + zy*zy <= 3000.0 and it < max_iter:
+                        r = np.sqrt(zx*zx + zy*zy)
+                        theta = np.arctan2(zy, zx) * exp_custom
+                        r_n = r ** exp_custom
+                        zx = r_n * np.cos(theta) + sx
+                        zy = r_n * np.sin(theta) + sy
+                        it += 1
+
+            if it < max_iter and modo_smooth:
+                log_zn = np.log(zx*zx + zy*zy) * 0.5
+                nu = np.log(log_zn / np.log(2.0)) / np.log(2.0)
+                fractal[i, j] = (it + 1.0 - nu) / max_iter
+            else:
+                fractal[i, j] = it / max_iter
+
     return fractal
 
 
@@ -187,6 +214,7 @@ class AppFractales:
         self.mostrar_orbita = False
         self.puntos_orbita = None
         self.controles = []
+        self.geom_cache = {}
         self.info_math = {
             0: ("Mandelbrot", r"$Z_{n+1} = Z_n^2 + C$", "D ≈ 2.0"),
             1: ("Julia", r"$Z_{n+1} = Z_n^2 + C_fix$", "D ≈ 2.0"),
@@ -527,7 +555,18 @@ class AppFractales:
         self.ax = self.fig.add_subplot(111, facecolor='black')
         self.fig.subplots_adjust(left=0.2, right=0.8, bottom=0.1, top=0.9)
 
-        
+        self.image = self.ax.imshow(np.zeros((2, 2)), cmap=self.paletas[self.idx_col % 12],
+                                    origin='lower', aspect='equal', visible=False,
+                                    extent=[self.x_min, self.x_max, self.y_min, self.y_max],
+                                    interpolation='nearest', alpha=1.0)
+        try:
+            self.image.set_clim(0.0, 1.0)
+        except Exception:
+            pass
+        self.orbit_line, = self.ax.plot([], [], color='black', marker='o', markersize=2,
+                                        lw=0.5, alpha=0.7, visible=False)
+        self._geometric_artists = []
+
         # TEXTOS FIJOS (Subimos info_math a 0.45 para dar más espacio)
         self.txt_help = self.fig.text(0.02, 0.5, "", color='#888888', fontsize=9, family='monospace', va='center')
         self.txt_info = self.fig.text(0.98, 0.40, "", color='white', fontsize=10, 
@@ -648,7 +687,7 @@ class AppFractales:
             self.slid_it.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_it.valtext.set_fontfamily('monospace')
             self.slid_it.valtext.set_color('cyan')
-            self.slid_it.on_changed(self.cambiar_it_pix)
+            self.slid_it.on_changed(self.cambiar_it_pix_fast)
             self.controles.append(self.slid_it)
 
             # Slider de Amplitud de Color (Color)
@@ -658,7 +697,7 @@ class AppFractales:
             self.slid_col.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_col.valtext.set_fontfamily('monospace')
             self.slid_col.valtext.set_color('cyan')
-            self.slid_col.on_changed(self.cambiar_color)
+            self.slid_col.on_changed(self.cambiar_color_fast)
             self.controles.append(self.slid_col)
 
             # Slider de Hue (Desplazamiento)
@@ -668,7 +707,7 @@ class AppFractales:
             self.slid_hue.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_hue.valtext.set_fontfamily('monospace')
             self.slid_hue.valtext.set_color('cyan')
-            self.slid_hue.on_changed(self.cambiar_hue)
+            self.slid_hue.on_changed(self.cambiar_hue_fast)
             self.controles.append(self.slid_hue)
 
             # Botón para activar/desactivar Smooth (Estilo Premium sin bordes)
@@ -765,9 +804,14 @@ class AppFractales:
 
     def toggle_smooth(self, _):
         self.modo_smooth = not self.modo_smooth
+        if hasattr(self, 'btn_sm'):
+            txt_sm = 'Smooth: ON' if self.modo_smooth else 'Smooth: OFF'
+            col_sm = '#0a2f1d' if self.modo_smooth else '#1a1a1a'
+            col_txt = '#00ff66' if self.modo_smooth else '#888888'
+            self.btn_sm.label.set_text(txt_sm)
+            self.btn_sm.color = col_sm
+            self.btn_sm.label.set_color(col_txt)
         self.actualizar()
-        # Re-abrimos para que el botón cambie de color y texto (o usa set_text)
-        self.abrir(self.tipo, (self.x_min, self.x_max, self.y_min, self.y_max, self.tipo, self.nom_f))
 
     def cambiar_it_pix(self, v):
         self.it_pix = int(v)
@@ -800,6 +844,11 @@ class AppFractales:
             v = str(self.julia_c).replace('(','').replace(')','').replace('j','i')
             self.txt_julia.set_val(v)
 
+    def _get_cached_geometry(self, clave, generador):
+        if clave not in self.geom_cache:
+            self.geom_cache[clave] = generador()
+        return self.geom_cache[clave]
+
 # -E-N-V-I-A-R---P-O-R---P-A-R-T-E-S-
 
     def on_mouse(self, e):
@@ -821,15 +870,27 @@ class AppFractales:
                 else: nx, ny = zx*zx - zy*zy + cx, 2*zx*zy + cy
                 zx, zy = nx, ny
                 if zx*zx + zy*zy > 10: break
-            if self.puntos_orbita: self.puntos_orbita.remove()
-            self.puntos_orbita, = self.ax.plot(ox, oy, color='black', marker='o', markersize=2, lw=0.5, alpha=0.7)
+            self.orbit_line.set_data(ox, oy)
+            self.orbit_line.set_visible(True)
+        else:
+            self.orbit_line.set_visible(False)
         self.fig.canvas.draw_idle()
 
     def actualizar(self):
         if not self.en_exp: return
-        self.ax.clear(); self.puntos_orbita = None
         c_lin = self.colores_lin[self.idx_col % 6]
-        
+        self.ax.set_facecolor('black')
+        self.image.set_cmap(self.paletas[self.idx_col % 12])
+        self.image.set_visible(False)
+        self.orbit_line.set_visible(False)
+        if hasattr(self, '_geometric_artists'):
+            for art in self._geometric_artists:
+                try:
+                    art.remove()
+                except:
+                    pass
+            self._geometric_artists = []
+
         # ACTUALIZAR AYUDA (En lugar de crear texto nuevo)
         h_text = "CONTROLES:\n\nESC: Menú\nC: Color\nR: Reset\nP: Guardar"
         # ACTUALIZAR AYUDA CON INSTRUCCIONES DE PORTAPAPELES
@@ -867,8 +928,27 @@ class AppFractales:
                                    0.0, 0.0, False)
             
             img_modificado = (img * self.val_color + self.val_hue) % 1.0
-            self.ax.imshow(img_modificado, extent=[self.x_min, self.x_max, self.y_min, self.y_max], 
-                           cmap=self.paletas[self.idx_col % 12], origin='lower', aspect='equal') # <-- Usá 'equal'
+            try:
+                print(f"[DEBUG] actualizar tipo=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+            except Exception:
+                pass
+            self.image.set_data(img_modificado)
+            try:
+                self.image.set_clim(0.0, 1.0)
+            except Exception:
+                pass
+            try:
+                self.image.set_interpolation('nearest')
+            except Exception:
+                pass
+            try:
+                self.image.set_extent([self.x_min, self.x_max, self.y_min, self.y_max])
+            except Exception:
+                pass
+            try:
+                self.image.set_visible(True)
+            except Exception:
+                pass
 
 
 
@@ -876,44 +956,86 @@ class AppFractales:
 
         elif self.tipo == 4 or self.tipo == 10:
             # --- VISOR GENERAL DE AMBOS COPOS DE KOCH ---
-            lx, ly = [], []
-            p1 = np.array([0.15, 0.25])
-            p2 = np.array([0.5, 0.856])
-            p3 = np.array([0.85, 0.25])
-            
-            if self.tipo == 4:
-                # Cable conectado al Copo Estándar (Hacia afuera)
-                gen_koch(p1, p2, self.it_lin, lx, ly)
-                lx.append(p2[0]); ly.append(p2[1])
-                gen_koch(p2, p3, self.it_lin, lx, ly)
-                lx.append(p3[0]); ly.append(p3[1])
-                gen_koch(p3, p1, self.it_lin, lx, ly)
-                lx.append(p1[0]); ly.append(p1[1])
+            key = ('koch', self.tipo, self.it_lin)
+            if key in self.geom_cache:
+                lx, ly = self.geom_cache[key]
             else:
-                # Cable conectado al Copo Invertido (Hacia adentro)
-                gen_koch(p2, p1, self.it_lin, lx, ly)
-                lx.append(p1[0]); ly.append(p1[1])
-                gen_koch(p1, p3, self.it_lin, lx, ly)
-                lx.append(p3[0]); ly.append(p3[1])
-                gen_koch(p3, p2, self.it_lin, lx, ly)
-                lx.append(p2[0]); ly.append(p2[1])
+                lx, ly = [], []
+                p1 = np.array([0.15, 0.25])
+                p2 = np.array([0.5, 0.856])
+                p3 = np.array([0.85, 0.25])
+                if self.tipo == 4:
+                    gen_koch(p1, p2, self.it_lin, lx, ly)
+                    lx.append(p2[0]); ly.append(p2[1])
+                    gen_koch(p2, p3, self.it_lin, lx, ly)
+                    lx.append(p3[0]); ly.append(p3[1])
+                    gen_koch(p3, p1, self.it_lin, lx, ly)
+                    lx.append(p1[0]); ly.append(p1[1])
+                else:
+                    gen_koch(p2, p1, self.it_lin, lx, ly)
+                    lx.append(p1[0]); ly.append(p1[1])
+                    gen_koch(p1, p3, self.it_lin, lx, ly)
+                    lx.append(p3[0]); ly.append(p3[1])
+                    gen_koch(p3, p2, self.it_lin, lx, ly)
+                    lx.append(p2[0]); ly.append(p2[1])
+                self.geom_cache[key] = (lx, ly)
 
-            self.ax.fill(lx, ly, color=c_lin, alpha=0.3)
-            self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            artists = self.ax.fill(lx, ly, color=c_lin, alpha=0.3)
+            self._geometric_artists.extend(artists)
+            line_artist, = self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            self._geometric_artists.append(line_artist)
 
 # ---
 
         elif self.tipo == 5:
-            lx, ly = [], []; gen_dragon(np.array([0,0]), np.array([1,0]), self.it_lin, 1, lx, ly); self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            key = ('dragon', self.it_lin)
+            if key in self.geom_cache:
+                lx, ly = self.geom_cache[key]
+            else:
+                lx, ly = [], []
+                gen_dragon(np.array([0,0]), np.array([1,0]), self.it_lin, 1, lx, ly)
+                self.geom_cache[key] = (lx, ly)
+            line_artist, = self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            self._geometric_artists.append(line_artist)
         elif self.tipo == 6:
-            pts = []; gen_sierpinski(np.array([0,0]), np.array([1,0]), np.array([0.5,0.866]), self.it_lin, pts)
-            for tx, ty in pts: self.ax.fill(tx, ty, color=c_lin, alpha=0.3); self.ax.plot(tx, ty, color=c_lin, lw=1.5)
+            key = ('sierpinski', self.it_lin)
+            if key in self.geom_cache:
+                pts = self.geom_cache[key]
+            else:
+                pts = []
+                gen_sierpinski(np.array([0,0]), np.array([1,0]), np.array([0.5,0.866]), self.it_lin, pts)
+                self.geom_cache[key] = pts
+            for tx, ty in pts:
+                artists = self.ax.fill(tx, ty, color=c_lin, alpha=0.3)
+                self._geometric_artists.extend(artists)
+                line_artist, = self.ax.plot(tx, ty, color=c_lin, lw=1.5)
+                self._geometric_artists.append(line_artist)
         elif self.tipo == 7:
-            pts = []; gen_arbol(np.array([0.4, 0]), np.array([0.6, 0]), self.it_lin, pts, self.angulo)
-            for tx, ty in pts: self.ax.fill(tx, ty, color=c_lin, alpha=0.3); self.ax.plot(tx, ty, color=c_lin, lw=1.2)
+            key = ('arbol', self.it_lin, self.angulo)
+            if key in self.geom_cache:
+                pts = self.geom_cache[key]
+            else:
+                pts = []
+                gen_arbol(np.array([0.4, 0]), np.array([0.6, 0]), self.it_lin, pts, self.angulo)
+                self.geom_cache[key] = pts
+            for tx, ty in pts:
+                artists = self.ax.fill(tx, ty, color=c_lin, alpha=0.3)
+                self._geometric_artists.extend(artists)
+                line_artist, = self.ax.plot(tx, ty, color=c_lin, lw=1.2)
+                self._geometric_artists.append(line_artist)
         elif self.tipo == 8:
-            pts = []; gen_pentagonos(np.array([0.5,0.5]), 0.4, np.pi/2, self.it_lin, pts)
-            for tx, ty in pts: self.ax.fill(tx, ty, color=c_lin, alpha=0.4); self.ax.plot(tx, ty, color=c_lin, lw=1.5)
+            key = ('pentagonos', self.it_lin)
+            if key in self.geom_cache:
+                pts = self.geom_cache[key]
+            else:
+                pts = []
+                gen_pentagonos(np.array([0.5,0.5]), 0.4, np.pi/2, self.it_lin, pts)
+                self.geom_cache[key] = pts
+            for tx, ty in pts:
+                artists = self.ax.fill(tx, ty, color=c_lin, alpha=0.4)
+                self._geometric_artists.extend(artists)
+                line_artist, = self.ax.plot(tx, ty, color=c_lin, lw=1.5)
+                self._geometric_artists.append(line_artist)
         elif self.tipo == 9:
             caras = []; it_m = min(self.it_lin, 3)
             gen_cubo_iso(-0.5, -0.5, -0.5, 1.0, it_m, caras)
@@ -922,35 +1044,50 @@ class AppFractales:
                 elif cara == "left": fcol = plt.cm.colors.to_hex(np.array(plt.cm.colors.to_rgb(c_lin))*0.8)
                 else: fcol = plt.cm.colors.to_hex(np.array(plt.cm.colors.to_rgb(c_lin))*0.6)
                 poly = np.array(pts)
-                self.ax.fill(poly[:,0], poly[:,1], facecolor=fcol, edgecolor='black', lw=0.3)
+                artists = self.ax.fill(poly[:,0], poly[:,1], facecolor=fcol, edgecolor='black', lw=0.3)
+                self._geometric_artists.extend(artists)
         elif self.tipo == 11:
-            lx, ly = [], []
             # Ajustamos dinámicamente el detalle máximo a 6 para evitar que se congele
             nivel_h = min(6, max(1, int(self.it_lin)))
-            gen_hilbert(0, 0, 1, 0, 0, 1, nivel_h, lx, ly)
-            self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            key = ('hilbert', nivel_h)
+            if key in self.geom_cache:
+                lx, ly = self.geom_cache[key]
+            else:
+                lx, ly = [], []
+                gen_hilbert(0, 0, 1, 0, 0, 1, nivel_h, lx, ly)
+                self.geom_cache[key] = (lx, ly)
+            line_artist, = self.ax.plot(lx, ly, color=c_lin, lw=1.5)
+            self._geometric_artists.append(line_artist)
             self.ax.set_xlim(-0.05, 1.05); self.ax.set_ylim(-0.05, 1.05)
         elif self.tipo == 12:
-            pts = []
             nivel_v = min(5, max(1, int(self.it_lin)))
-            gen_vicsek(0, 0, 1.0, nivel_v, pts)
-            for tx, ty in pts: self.ax.plot(tx, ty, color=c_lin, lw=1.2)
+            key = ('vicsek', nivel_v)
+            if key in self.geom_cache:
+                pts = self.geom_cache[key]
+            else:
+                pts = []
+                gen_vicsek(0, 0, 1.0, nivel_v, pts)
+                self.geom_cache[key] = pts
+            for tx, ty in pts:
+                line_artist, = self.ax.plot(tx, ty, color=c_lin, lw=1.2)
+                self._geometric_artists.append(line_artist)
             self.ax.set_xlim(-0.05, 1.05); self.ax.set_ylim(-0.05, 1.05)
             
         elif self.tipo == 13:
-            pts = []
             # Forzamos un límite seguro de detalle para que no se cuelgue la PC
             nivel_h = min(4, max(1, int(self.it_lin))) 
-            
-            # Ejecutamos el algoritmo centrado en (0.5, 0.5)
-            gen_hexflake(0.5, 0.5, 0.45, nivel_h, pts)
-            
-            # Dibujamos cada uno de los hexágonos iterados
+            key = ('hexflake', nivel_h)
+            if key in self.geom_cache:
+                pts = self.geom_cache[key]
+            else:
+                pts = []
+                gen_hexflake(0.5, 0.5, 0.45, nivel_h, pts)
+                self.geom_cache[key] = pts
             for tx, ty in pts: 
-                self.ax.fill(tx, ty, color=c_lin, alpha=0.3)
-                self.ax.plot(tx, ty, color=c_lin, lw=1.2)
-                
-            # Establecemos el encuadre simétrico del lienzo
+                artists = self.ax.fill(tx, ty, color=c_lin, alpha=0.3)
+                self._geometric_artists.extend(artists)
+                line_artist, = self.ax.plot(tx, ty, color=c_lin, lw=1.2)
+                self._geometric_artists.append(line_artist)
             self.ax.set_xlim(0.0, 1.0)
             self.ax.set_ylim(0.0, 1.0)
 
@@ -996,8 +1133,27 @@ class AppFractales:
             
             img_modificado = (img * self.val_color + self.val_hue) % 1.0
             
-            self.ax.imshow(img_modificado, extent=[self.x_min, self.x_max, self.y_min, self.y_max], 
-                           cmap=self.paletas[self.idx_col % 12], origin='lower', aspect='auto')
+            try:
+                print(f"[DEBUG] actualizar tipo!=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+            except Exception:
+                pass
+            self.image.set_data(img_modificado)
+            try:
+                self.image.set_clim(0.0, 1.0)
+            except Exception:
+                pass
+            try:
+                self.image.set_interpolation('nearest')
+            except Exception:
+                pass
+            try:
+                self.image.set_extent([self.x_min, self.x_max, self.y_min, self.y_max])
+            except Exception:
+                pass
+            try:
+                self.image.set_visible(True)
+            except Exception:
+                pass
 
 
 
@@ -1022,6 +1178,13 @@ class AppFractales:
         #self.ax.set_aspect('auto') 
         self.ax.set_aspect('equal', adjustable='box')
         self.ax.axis('off')
+        # Aseguramos que la imagen use los límites finales
+        try:
+            if hasattr(self, 'image') and self.image is not None:
+                self.image.set_extent([self.x_min, self.x_max, self.y_min, self.y_max])
+                self.image.set_visible(True)
+        except Exception:
+            pass
         self.fig.canvas.draw_idle()
 
 
@@ -1044,6 +1207,120 @@ class AppFractales:
         self.y_max = my + (self.y_max - my) * f
         
         self.actualizar()
+
+
+    # --- Slider fast-preview helpers ---
+    def _cancel_slider_timer(self):
+        try:
+            if hasattr(self, '_slider_timer') and self._slider_timer is not None:
+                try:
+                    self._slider_timer.stop()
+                except:
+                    pass
+                self._slider_timer = None
+        except:
+            self._slider_timer = None
+
+    def _schedule_preview(self):
+        # Stop previous timer and start a new one to finalize the full render
+        self._cancel_slider_timer()
+        # Render an immediate low-res preview
+        try:
+            self._render_preview()
+        except Exception:
+            pass
+        # Schedule finalize after short delay (ms)
+        try:
+            t = self.fig.canvas.new_timer(interval=300)
+            t.add_callback(self._finalize_slider_change)
+            t.start()
+            self._slider_timer = t
+        except Exception:
+            self._slider_timer = None
+
+    def _render_preview(self):
+        # Fast, low-resolution preview used while dragging sliders
+        if not self.en_exp: return
+        if self.tipo >= 3 and self.tipo != -1:
+            return
+        # preview target size (lower than full-res 600)
+        pre_w = max(80, int(600 * 0.25))
+        pre_h = pre_w
+
+        # determine calculation mode and parameters (mirrors actualizar logic)
+        jx, jy = self.julia_c.real, self.julia_c.imag
+        tipo_calculo = self.tipo
+        exponente_custom = 2.0
+        if self.tipo == -1:
+            formula_clean = self.formula_usuario.lower().replace(" ", "")
+            if "**" in formula_clean:
+                try:
+                    parte_numerica = ""
+                    for caracter in formula_clean.split("**")[1]:
+                        if caracter.isdigit() or caracter == ".":
+                            parte_numerica += caracter
+                        else:
+                            break
+                    if parte_numerica:
+                        exponente_custom = float(parte_numerica)
+                except:
+                    exponente_custom = 2.0
+            if self.es_modo_julia:
+                jx, jy = self.custom_c.real, self.custom_c.imag
+                tipo_calculo = 1
+            else:
+                tipo_calculo = 0
+
+        # compute preview image
+        try:
+            img = calcular_pixeles(pre_w, pre_h, self.it_pix, self.x_min, self.x_max,
+                                   self.y_min, self.y_max, tipo_calculo, self.it_lin,
+                                   jx, jy, self.modo_smooth, exponente_custom)
+            img_mod = (img * self.val_color + self.val_hue) % 1.0
+            try:
+                print(f"[DEBUG] preview img shape={img.shape} min={img.min():.6f} max={img.max():.6f}")
+            except Exception:
+                pass
+            self.image.set_data(img_mod)
+            try:
+                self.image.set_clim(0.0, 1.0)
+            except Exception:
+                pass
+            try:
+                self.image.set_interpolation('nearest')
+            except Exception:
+                pass
+            try:
+                self.image.set_extent([self.x_min, self.x_max, self.y_min, self.y_max])
+            except Exception:
+                pass
+            try:
+                self.image.set_visible(True)
+            except Exception:
+                pass
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
+
+    def _finalize_slider_change(self):
+        # Called after user stops moving the slider: perform full update
+        self._cancel_slider_timer()
+        try:
+            self.actualizar()
+        except Exception:
+            pass
+
+    def cambiar_it_pix_fast(self, v):
+        self.it_pix = int(v)
+        self._schedule_preview()
+
+    def cambiar_color_fast(self, v):
+        self.val_color = v
+        self._schedule_preview()
+
+    def cambiar_hue_fast(self, v):
+        self.val_hue = v
+        self._schedule_preview()
 
 
 
@@ -1331,3 +1608,12 @@ class AppFractales:
 
 if __name__ == "__main__":
     AppFractales()
+
+
+'''
+Lista de cosas que quiero añadir a mi codigo:
+    - Optimizacion
+    - Fractal de Newton
+    - MAS OPTIMIZACION
+    - Otras cosas
+    '''
