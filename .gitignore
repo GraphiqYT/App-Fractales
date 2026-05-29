@@ -1,7 +1,7 @@
 # Ignorar imágenes y renders pesados
-*.png
-*.jpg
-*.jpeg
+#*.png
+#*.jpg
+#*.jpeg
 
 # Ignorar archivos ejecutables y compilados de Pascal
 *.exe

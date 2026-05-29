@@ -1,7 +1,14 @@
 import numpy as np
+from matplotlib import colors as mcolors
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button, Slider, TextBox
 from numba import njit, prange
+from threading import Thread
+import time
+try:
+    from PIL import Image
+except Exception:
+    Image = None
 
 plt.rcParams['toolbar'] = 'None'
 
@@ -84,6 +91,84 @@ def _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, m
             else:
                 fractal[i, j] = it / max_iter
 
+    return fractal
+
+
+@njit(parallel=True, fastmath=True)
+def _mandelbrot_julia_njit(cx_grid, cy_grid, max_iter, is_julia, jx, jy, modo_smooth):
+    alto, ancho = cx_grid.shape
+    fractal = np.empty((alto, ancho), dtype=np.float64)
+    for i in prange(alto):
+        for j in range(ancho):
+            x = cx_grid[i, j]
+            y = cy_grid[i, j]
+            if is_julia:
+                zx = x; zy = y; sx = jx; sy = jy
+            else:
+                zx = 0.0; zy = 0.0; sx = x; sy = y
+            it = 0
+            while zx*zx + zy*zy <= 3000.0 and it < max_iter:
+                nx = zx*zx - zy*zy + sx
+                ny = 2.0*zx*zy + sy
+                zx = nx; zy = ny; it += 1
+            if it < max_iter and modo_smooth:
+                log_zn = np.log(zx*zx + zy*zy) * 0.5
+                nu = np.log(log_zn / np.log(2.0)) / np.log(2.0)
+                fractal[i, j] = (it + 1.0 - nu) / max_iter
+            else:
+                fractal[i, j] = it / max_iter
+    return fractal
+
+
+@njit(parallel=True, fastmath=True)
+def _burning_ship_njit(cx_grid, cy_grid, max_iter, jx, jy, modo_smooth):
+    alto, ancho = cx_grid.shape
+    fractal = np.empty((alto, ancho), dtype=np.float64)
+    for i in prange(alto):
+        for j in range(ancho):
+            x = cx_grid[i, j]
+            y = cy_grid[i, j]
+            zx = 0.0; zy = 0.0; sx = x; sy = y
+            it = 0
+            while zx*zx + zy*zy <= 3000.0 and it < max_iter:
+                nx = zx*zx - zy*zy + sx
+                ny = abs(2.0*zx*zy) + sy
+                zx = nx; zy = ny; it += 1
+            if it < max_iter and modo_smooth:
+                log_zn = np.log(zx*zx + zy*zy) * 0.5
+                nu = np.log(log_zn / np.log(2.0)) / np.log(2.0)
+                fractal[i, j] = (it + 1.0 - nu) / max_iter
+            else:
+                fractal[i, j] = it / max_iter
+    return fractal
+
+
+@njit(parallel=True, fastmath=True)
+def _exp_fractal_njit(cx_grid, cy_grid, max_iter, is_julia, jx, jy, modo_smooth, exp_custom):
+    alto, ancho = cx_grid.shape
+    fractal = np.empty((alto, ancho), dtype=np.float64)
+    for i in prange(alto):
+        for j in range(ancho):
+            x = cx_grid[i, j]
+            y = cy_grid[i, j]
+            if is_julia:
+                zx = x; zy = y; sx = jx; sy = jy
+            else:
+                zx = 0.0; zy = 0.0; sx = x; sy = y
+            it = 0
+            while zx*zx + zy*zy <= 3000.0 and it < max_iter:
+                r = np.sqrt(zx*zx + zy*zy)
+                theta = np.arctan2(zy, zx) * exp_custom
+                r_n = r ** exp_custom
+                zx = r_n * np.cos(theta) + sx
+                zy = r_n * np.sin(theta) + sy
+                it += 1
+            if it < max_iter and modo_smooth:
+                log_zn = np.log(zx*zx + zy*zy) * 0.5
+                nu = np.log(log_zn / np.log(2.0)) / np.log(2.0)
+                fractal[i, j] = (it + 1.0 - nu) / max_iter
+            else:
+                fractal[i, j] = it / max_iter
     return fractal
 
 
@@ -209,12 +294,20 @@ class AppFractales:
         self.fig = plt.figure(figsize=(15, 8), facecolor='black')
         self.julia_c = complex(-0.7, 0.27) 
         self.colores_lin = ['#00ffff', '#ff00ff', '#ffffff', '#00ff00', '#ffaa00', '#ff4444']
-        self.paletas = ['magma', 'inferno', 'plasma', 'viridis', 'cividis', 'twilight', 'gnuplot2', 'ocean', 'gist_earth', 'terrain', 'cubehelix', 'hot']
+        self.paletas = [
+            'magma', 'inferno', 'plasma', 'viridis', 'cividis', 'twilight', 'gnuplot2',
+            'ocean', 'gist_earth', 'terrain', 'cubehelix', 'hot', 'coolwarm', 'Spectral',
+            'turbo', 'nipy_spectral', 'copper', 'bone', 'pink', 'spring', 'summer',
+            'autumn', 'winter'
+        ]
         self.idx_col, self.it_lin, self.en_exp = 0, 4, False
+        self.hd_res = 6000
         self.mostrar_orbita = False
         self.puntos_orbita = None
         self.controles = []
         self.geom_cache = {}
+        self.grid_cache = {}
+        self.exponente_custom = 2.0
         self.info_math = {
             0: ("Mandelbrot", r"$Z_{n+1} = Z_n^2 + C$", "D ≈ 2.0"),
             1: ("Julia", r"$Z_{n+1} = Z_n^2 + C_fix$", "D ≈ 2.0"),
@@ -249,8 +342,8 @@ class AppFractales:
         self.angulo = 0.5
         
         self.it_pix = 123      # Iteraciones iniciales
-        self.val_color = 0.9   # Amplitud de color inicial
-        self.val_hue = 0.0     # Desplazamiento inicial
+        self.val_color = 1.0   # Rango de colores (1.0 = rango completo, 0.5 = mitad)
+        self.val_hue = 0.0     # Rotacion de Hue (0.0 = sin cambio, 0.5 = media vuelta)
         self.modo_smooth = False # Smooth desactivado
 
         self.formula_usuario = "Z**2 + C" # Fórmula inicial por defecto
@@ -490,7 +583,7 @@ class AppFractales:
                 ax.set_aspect('equal')
             elif tipo == -1:
                 img = calcular_pixeles(80, 80, 41, conf[0], conf[1], conf[2], conf[3], 1, 3, 0.0, 0.8, False)
-                ax.imshow(img, cmap=self.paletas[self.idx_col % 12], origin='lower', aspect='equal')
+                ax.imshow(img, cmap=self.paletas[self.idx_col % len(self.paletas)], origin='lower', aspect='equal')
             elif tipo == 11:
                 lx, ly = [], []
                 gen_hilbert(0, 0, 1, 0, 0, 1, 3, lx, ly) # Nivel 3 para miniatura
@@ -498,7 +591,7 @@ class AppFractales:
                 ax.set_xlim(-0.05, 1.05); ax.set_ylim(-0.05, 1.05); ax.set_aspect('equal')
             else:
                 img = calcular_pixeles(80, 80, 41, conf[0], conf[1], conf[2], conf[3], tipo, 3, -0.7, 0.27, False)
-                ax.imshow(img, cmap=self.paletas[self.idx_col % 12], origin='lower', aspect='equal')
+                ax.imshow(img, cmap=self.paletas[self.idx_col % len(self.paletas)], origin='lower', aspect='equal')
             
             ax.axis('off')
             ax.set_title(conf[5], color='#dddddd', fontsize=9, fontfamily='monospace', fontweight='bold', pad=4)
@@ -555,7 +648,7 @@ class AppFractales:
         self.ax = self.fig.add_subplot(111, facecolor='black')
         self.fig.subplots_adjust(left=0.2, right=0.8, bottom=0.1, top=0.9)
 
-        self.image = self.ax.imshow(np.zeros((2, 2)), cmap=self.paletas[self.idx_col % 12],
+        self.image = self.ax.imshow(np.zeros((2, 2)), cmap=self.paletas[self.idx_col % len(self.paletas)],
                                     origin='lower', aspect='equal', visible=False,
                                     extent=[self.x_min, self.x_max, self.y_min, self.y_max],
                                     interpolation='nearest', alpha=1.0)
@@ -569,6 +662,7 @@ class AppFractales:
 
         # TEXTOS FIJOS (Subimos info_math a 0.45 para dar más espacio)
         self.txt_help = self.fig.text(0.02, 0.5, "", color='#888888', fontsize=9, family='monospace', va='center')
+        self.txt_palette = self.fig.text(0.02, 0.92, "", color='white', fontsize=10, family='monospace')
         self.txt_info = self.fig.text(0.98, 0.40, "", color='white', fontsize=10, 
                                       family='monospace', ha='right', va='bottom',
                                       bbox=dict(facecolor='black', alpha=0.5, edgecolor='none'))
@@ -678,8 +772,8 @@ class AppFractales:
             self.slid_ang.on_changed(self.cambiar_ang)
             self.controles.append(self.slid_ang)
 
-        # --- NUEVOS CONTROLES DE RENDERIZADO (Solo para tipos 0, 1, 2) ---
-        if tipo < 3:
+        # --- NUEVOS CONTROLES DE RENDERIZADO (Solo para fractales de píxeles) ---
+        if tipo < 3 or tipo == -1:
             # Slider de Iteraciones
             ax_it = self.fig.add_axes([0.78, 0.75, 0.17, 0.02], facecolor='#222222')
             self.slid_it = Slider(ax_it, 'Iter ', 0, 800, valinit=self.it_pix, valfmt='%d')
@@ -690,9 +784,9 @@ class AppFractales:
             self.slid_it.on_changed(self.cambiar_it_pix_fast)
             self.controles.append(self.slid_it)
 
-            # Slider de Amplitud de Color (Color)
+            # Slider de Rango de Color
             ax_c = self.fig.add_axes([0.78, 0.70, 0.17, 0.02], facecolor='#222222')
-            self.slid_col = Slider(ax_c, 'Rango ', 0.9, 1.0, valinit=self.val_color)
+            self.slid_col = Slider(ax_c, 'Rango ', 0.0, 1.0, valinit=self.val_color, valstep=0.01)
             self.slid_col.label.set_color('white')
             self.slid_col.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_col.valtext.set_fontfamily('monospace')
@@ -700,9 +794,9 @@ class AppFractales:
             self.slid_col.on_changed(self.cambiar_color_fast)
             self.controles.append(self.slid_col)
 
-            # Slider de Hue (Desplazamiento)
+            # Slider de Hue (Rotacion de colores)
             ax_h = self.fig.add_axes([0.78, 0.65, 0.17, 0.02], facecolor='#222222')
-            self.slid_hue = Slider(ax_h, 'Hue ', 0.0, 1.0, valinit=self.val_hue)
+            self.slid_hue = Slider(ax_h, 'Hue ', 0.0, 1.0, valinit=self.val_hue, valstep=0.01)
             self.slid_hue.label.set_color('white')
             self.slid_hue.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_hue.valtext.set_fontfamily('monospace')
@@ -722,6 +816,16 @@ class AppFractales:
             self.btn_sm.label.set_fontsize(9)
             self.btn_sm.on_clicked(self.toggle_smooth)
             self.controles.append(self.btn_sm)
+
+            # Slider adicional para ajustar la resolución HD de guardado (solo fractales de píxeles)
+            ax_hd = self.fig.add_axes([0.02, 0.10, 0.18, 0.03], facecolor='#222222')
+            self.slid_hd = Slider(ax_hd, 'HD Res', 1000, 8000, valinit=self.hd_res, valfmt='%d', valstep=500)
+            self.slid_hd.label.set_color('white')
+            self.slid_hd.label.set_fontfamily('monospace')
+            self.slid_hd.valtext.set_color('cyan')
+            self.slid_hd.valtext.set_fontfamily('monospace')
+            self.slid_hd.on_changed(self.cambiar_hd_res)
+            self.controles.append(self.slid_hd)
 
 
         # --- PANEL IZQUIERDO: CONTROLES PARA FRACTAL PERSONALIZADO (ID -1) ---
@@ -782,6 +886,22 @@ class AppFractales:
         # Actualizamos el texto LaTeX visual arriba a la izquierda
         f_latex = r"$Z_{n+1} = " + self.formula_usuario.replace("**", "^") + "$"
         self.txt_latex_visual.set_text(f_latex)
+        # Parse exponent once and cache it to avoid repeated string work
+        exponente = 2.0
+        formula_clean = self.formula_usuario.lower().replace(" ", "")
+        if "**" in formula_clean:
+            try:
+                parte_numerica = ""
+                for caracter in formula_clean.split("**")[1]:
+                    if caracter.isdigit() or caracter == ".":
+                        parte_numerica += caracter
+                    else:
+                        break
+                if parte_numerica:
+                    exponente = float(parte_numerica)
+            except Exception:
+                exponente = 2.0
+        self.exponente_custom = exponente
         self.actualizar()
 
     def toggle_modo_custom(self, _):
@@ -800,6 +920,58 @@ class AppFractales:
         except:
             c_init_str = str(self.custom_c).replace('(','').replace(')','').replace('j','i')
             self.box_c_custom.set_val(c_init_str)
+
+    def _save_image_async(self, filename=None):
+        # Grab the current image array and save it in a background thread using PIL if available
+        try:
+            arr = None
+            if hasattr(self, 'image') and self.image is not None:
+                arr = self.image.get_array()
+            if arr is None:
+                print('No hay imagen para guardar.')
+                return
+            arrf = np.array(arr, dtype=np.float32)[::-1, :]
+            cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
+            rgba = (cmap(arrf) * 255).astype(np.uint8)
+            if filename is None:
+                fname = f"fractal_{time.strftime('%Y%m%d_%H%M%S')}.png"
+            else:
+                fname = filename
+            def _worker(data, name):
+                try:
+                    if Image is not None:
+                        Image.fromarray(data).save(name, optimize=True)
+                    else:
+                        plt.imsave(name, data[:,:, :3], cmap=None)
+                    print('Guardado en', name)
+                except Exception as ex:
+                    print('Error guardando imagen:', ex)
+            t = Thread(target=_worker, args=(rgba, fname), daemon=True)
+            t.start()
+            print('Guardado en background:', fname)
+        except Exception:
+            pass
+
+    def _apply_palette_and_hue(self, img):
+        # img: 2D float array in [0,1]
+        # Applies current palette, range (val_color) and hue rotation (val_hue)
+        try:
+            img_scaled = np.clip(np.array(img, dtype=np.float32) * float(self.val_color), 0.0, 1.0)
+            cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
+            rgba = cmap(img_scaled)
+            # rotate hue in RGB (keep alpha)
+            rgb = rgba[..., :3]
+            hsv = mcolors.rgb_to_hsv(rgb)
+            hsv[..., 0] = (hsv[..., 0] + float(self.val_hue)) % 1.0
+            rgb2 = mcolors.hsv_to_rgb(hsv)
+            rgba[..., :3] = rgb2
+            return rgba
+        except Exception:
+            try:
+                cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
+                return cmap(img)
+            except Exception:
+                return np.dstack([img, img, img, np.ones_like(img)])
 
 
     def toggle_smooth(self, _):
@@ -849,6 +1021,24 @@ class AppFractales:
             self.geom_cache[clave] = generador()
         return self.geom_cache[clave]
 
+    def _get_grid(self, w, h):
+        # Cachea la malla de coordenadas por tamaño y límites actuales
+        key = (int(w), int(h), float(self.x_min), float(self.x_max), float(self.y_min), float(self.y_max))
+        if key in self.grid_cache:
+            return self.grid_cache[key]
+        x_range = np.linspace(self.x_min, self.x_max, int(w), dtype=np.float64)
+        y_range = np.linspace(self.y_min, self.y_max, int(h), dtype=np.float64)
+        cx_grid, cy_grid = np.meshgrid(x_range, y_range)
+        self.grid_cache[key] = (cx_grid, cy_grid)
+        # keep cache small: if too many entries, remove oldest
+        try:
+            if len(self.grid_cache) > 8:
+                k = next(iter(self.grid_cache))
+                del self.grid_cache[k]
+        except Exception:
+            pass
+        return cx_grid, cy_grid
+
 # -E-N-V-I-A-R---P-O-R---P-A-R-T-E-S-
 
     def on_mouse(self, e):
@@ -880,7 +1070,7 @@ class AppFractales:
         if not self.en_exp: return
         c_lin = self.colores_lin[self.idx_col % 6]
         self.ax.set_facecolor('black')
-        self.image.set_cmap(self.paletas[self.idx_col % 12])
+        self.image.set_cmap(self.paletas[self.idx_col % len(self.paletas)])
         self.image.set_visible(False)
         self.orbit_line.set_visible(False)
         if hasattr(self, '_geometric_artists'):
@@ -891,10 +1081,9 @@ class AppFractales:
                     pass
             self._geometric_artists = []
 
-        # ACTUALIZAR AYUDA (En lugar de crear texto nuevo)
-        h_text = "CONTROLES:\n\nESC: Menú\nC: Color\nR: Reset\nP: Guardar"
+
         # ACTUALIZAR AYUDA CON INSTRUCCIONES DE PORTAPAPELES
-        h_text = "CONTROLES:\n\nESC: Menú\nC: Color\nR: Reset\nP: Guardar"
+        h_text = "CONTROLES:\n\nESC: Menú\nC / c: Cambiar paleta\nR: Reset\np: Guardar imagen\nP: Guardar imagen en HD"
         if self.tipo < 3: 
             h_text += "\nO: Órbita"
             h_text += "\nA: Auto-Demo (Animar)"
@@ -902,6 +1091,7 @@ class AppFractales:
             h_text += "\n\nPEGAR COORD:\n1. Clic en casilla\n2. Ctrl + V"
             
         self.txt_help.set_text(h_text)
+        self.txt_palette.set_text(f"PALETA: {self.paletas[self.idx_col % len(self.paletas)]}")
 
         # El texto de info matemática lo actualiza on_mouse, 
         # así que aquí no hace falta crear nada nuevo.
@@ -923,9 +1113,8 @@ class AppFractales:
         if self.tipo == 3:
             # Aseguramos que it_sierp sea al menos 1 para que se vea el cuadrado inicial
             nivel = max(1, int(self.it_lin)) 
-            img = calcular_pixeles(600, 600, self.it_pix, self.x_min, self.x_max, 
-                                   self.y_min, self.y_max, 3, nivel, 
-                                   0.0, 0.0, False)
+            cx, cy = self._get_grid(600, 600)
+            img = _calcular_pixeles_njit(cx, cy, self.it_pix, 3, nivel, 0.0, 0.0, False, 2.0)
             
             img_modificado = (img * self.val_color + self.val_hue) % 1.0
             try:
@@ -1100,26 +1289,11 @@ class AppFractales:
             exponente_custom = 2.0 # Por defecto arranca al cuadrado
             
             if self.tipo == -1:
-                formula_clean = self.formula_usuario.lower().replace(" ", "")
-                
-                # --- TRUCO SINTÁCTICO: Extraemos la potencia que tipeó el usuario ---
-                if "**" in formula_clean:
-                    try:
-                        # Cortamos el texto justo después del '**' para encontrar el número
-                        parte_numerica = ""
-                        for caracter in formula_clean.split("**")[1]:
-                            if caracter.isdigit() or caracter == ".":
-                                parte_numerica += caracter
-                            else:
-                                break
-                        if parte_numerica:
-                            exponente_custom = float(parte_numerica)
-                    except:
-                        exponente_custom = 2.0
-
+                # use cached exponent parsed on formula change
+                exponente_custom = self.exponente_custom
                 if self.es_modo_julia:
                     jx, jy = self.custom_c.real, self.custom_c.imag
-                    tipo_calculo = 1 
+                    tipo_calculo = 1
                 else:
                     tipo_calculo = 0
             
@@ -1127,17 +1301,31 @@ class AppFractales:
             max_it_actual = self.it_pix
             
             # --- ¡OJO AQUÍ! Agregamos exponente_custom al final de la llamada ---
-            img = calcular_pixeles(600, 600, max_it_actual, self.x_min, self.x_max, 
-                                   self.y_min, self.y_max, tipo_calculo, self.it_lin, 
-                                   jx, jy, self.modo_smooth, exponente_custom)
+            # Use cached grid + specialized kernels when possible
+            cx, cy = self._get_grid(600, 600)
+            is_julia = (tipo_calculo == 1)
+            if tipo_calculo == 2:
+                img = _burning_ship_njit(cx, cy, max_it_actual, jx, jy, self.modo_smooth)
+            elif exponente_custom is not None and exponente_custom != 2.0:
+                img = _exp_fractal_njit(cx, cy, max_it_actual, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+            else:
+                img = _mandelbrot_julia_njit(cx, cy, max_it_actual, is_julia, jx, jy, self.modo_smooth)
+            # Fallback: si el kernel devolvió una imagen completamente uniforme, usa la versión original
+            try:
+                if np.isfinite(img).all():
+                    if img.max() - img.min() < 1e-12:
+                        img = calcular_pixeles(600, 600, max_it_actual, self.x_min, self.x_max,
+                                               self.y_min, self.y_max, tipo_calculo, self.it_lin,
+                                               jx, jy, self.modo_smooth, exponente_custom)
+            except Exception:
+                pass
             
-            img_modificado = (img * self.val_color + self.val_hue) % 1.0
-            
+            img_rgba = self._apply_palette_and_hue(img)
             try:
                 print(f"[DEBUG] actualizar tipo!=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
             except Exception:
                 pass
-            self.image.set_data(img_modificado)
+            self.image.set_data(img_rgba)
             try:
                 self.image.set_clim(0.0, 1.0)
             except Exception:
@@ -1250,21 +1438,11 @@ class AppFractales:
         # determine calculation mode and parameters (mirrors actualizar logic)
         jx, jy = self.julia_c.real, self.julia_c.imag
         tipo_calculo = self.tipo
-        exponente_custom = 2.0
+        # determine calculation mode and parameters (mirrors actualizar logic)
+        tipo_calculo = self.tipo
+        # use cached exponent parsed when user changed formula
+        exponente_custom = self.exponente_custom if self.tipo == -1 else 2.0
         if self.tipo == -1:
-            formula_clean = self.formula_usuario.lower().replace(" ", "")
-            if "**" in formula_clean:
-                try:
-                    parte_numerica = ""
-                    for caracter in formula_clean.split("**")[1]:
-                        if caracter.isdigit() or caracter == ".":
-                            parte_numerica += caracter
-                        else:
-                            break
-                    if parte_numerica:
-                        exponente_custom = float(parte_numerica)
-                except:
-                    exponente_custom = 2.0
             if self.es_modo_julia:
                 jx, jy = self.custom_c.real, self.custom_c.imag
                 tipo_calculo = 1
@@ -1273,15 +1451,28 @@ class AppFractales:
 
         # compute preview image
         try:
-            img = calcular_pixeles(pre_w, pre_h, self.it_pix, self.x_min, self.x_max,
-                                   self.y_min, self.y_max, tipo_calculo, self.it_lin,
-                                   jx, jy, self.modo_smooth, exponente_custom)
-            img_mod = (img * self.val_color + self.val_hue) % 1.0
+            # compute preview image using cached grid and fast kernels
+            cx, cy = self._get_grid(pre_w, pre_h)
+            is_julia = (tipo_calculo == 1)
+            if tipo_calculo == 2:
+                img = _burning_ship_njit(cx, cy, self.it_pix, jx, jy, self.modo_smooth)
+            elif exponente_custom is not None and exponente_custom != 2.0:
+                img = _exp_fractal_njit(cx, cy, self.it_pix, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+            else:
+                img = _mandelbrot_julia_njit(cx, cy, self.it_pix, is_julia, jx, jy, self.modo_smooth)
+            try:
+                if np.isfinite(img).all() and (img.max() - img.min() < 1e-12):
+                    img = calcular_pixeles(pre_w, pre_h, self.it_pix, self.x_min, self.x_max,
+                                           self.y_min, self.y_max, tipo_calculo, self.it_lin,
+                                           jx, jy, self.modo_smooth, exponente_custom)
+            except Exception:
+                pass
+            img_rgba = self._apply_palette_and_hue(img)
             try:
                 print(f"[DEBUG] preview img shape={img.shape} min={img.min():.6f} max={img.max():.6f}")
             except Exception:
                 pass
-            self.image.set_data(img_mod)
+            self.image.set_data(img_rgba)
             try:
                 self.image.set_clim(0.0, 1.0)
             except Exception:
@@ -1313,6 +1504,10 @@ class AppFractales:
     def cambiar_it_pix_fast(self, v):
         self.it_pix = int(v)
         self._schedule_preview()
+
+    def cambiar_hd_res(self, v):
+        self.hd_res = int(v)
+        # No actualiza automáticamente; solo ajusta el valor para guardar con P
 
     def cambiar_color_fast(self, v):
         self.val_color = v
@@ -1375,34 +1570,52 @@ class AppFractales:
 
 
     def tecla(self, e):
-        if e.key == 'c':
+        if e.key is not None and e.key.lower() == 'c':
             self.idx_col += 1
-            if self.en_exp: self.actualizar()
-            else: self.menu_principal()
+            if self.en_exp:
+                self.actualizar()
+            else:
+                self.menu_principal()
         elif e.key == 'r' and self.en_exp:
             self.x_min, self.x_max, self.y_min, self.y_max = self.x_orig, self.x_max_orig, self.y_orig, self.y_max_orig
             self.actualizar()
         elif e.key == 'p' and self.en_exp:
-            ancho_px, alto_px = 5555, 5555
-            max_it_render = 900
-            
-            print(f"Iniciando renderizado Ultra-HD ({ancho_px}x{alto_px})...")
+            # Fast save: grab the current displayed image and save it in background
+            try:
+                self._save_image_async()
+                print("[Captura] Guardando imagen rápida en background...")
+            except Exception:
+                pass
+        elif e.key == 'P' and self.en_exp:
+            ancho_px = alto_px = int(self.hd_res)
+            max_it_render = int(self.it_pix)
+            print(f"Iniciando renderizado Ultra-HD ({ancho_px}x{alto_px}) con {max_it_render} iteraciones...")
             print("Esto puede tardar unos segundos, usaremos todos los núcleos de tu PC.")
-            
-            # 1. Calculamos la matriz de píxeles a máxima calidad
+            # Determine calculation mode and exponent
             jx, jy = self.julia_c.real, self.julia_c.imag
-            img_hq = calcular_pixeles(ancho_px, alto_px, max_it_render, 
-                                      self.x_min, self.x_max, self.y_min, self.y_max, 
-                                      self.tipo, self.it_lin, jx, jy, self.modo_smooth)
-            
-            # 2. Aplicamos tus ajustes de color
-            img_hq = (img_hq * self.val_color + self.val_hue) % 1.0
-            
-            # 3. Creamos una figura especial solo para el guardado (sin ejes ni botones)
+            tipo_calculo = self.tipo
+            exponente_custom = self.exponente_custom if self.tipo == -1 else 2.0
+            if self.tipo == -1:
+                if self.es_modo_julia:
+                    jx, jy = self.custom_c.real, self.custom_c.imag
+                    tipo_calculo = 1
+                else:
+                    tipo_calculo = 0
+            # generate grid and compute high-res image using specialized kernels
+            cx, cy = self._get_grid(ancho_px, alto_px)
+            is_julia = (tipo_calculo == 1)
+            if tipo_calculo == 2:
+                img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
+            elif exponente_custom is not None and exponente_custom != 2.0:
+                img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+            else:
+                img_hq = _mandelbrot_julia_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth)
+            # color adjustments (apply palette + hue rotation)
+            img_rgba_hq = self._apply_palette_and_hue(img_hq)
+            # render to a saving figure
             fig_save = plt.figure(figsize=(ancho_px/100, alto_px/100), dpi=100, facecolor='black')
-            ax_save = fig_save.add_axes([0, 0, 1, 1]) # Ocupa el 100% de la imagen
-            ax_save.imshow(img_hq, cmap=self.paletas[self.idx_col % 12], 
-                           origin='lower', aspect='auto')
+            ax_save = fig_save.add_axes([0, 0, 1, 1])
+            ax_save.imshow(img_rgba_hq, origin='lower', aspect='auto')
             ax_save.axis('off')
             
             # --- CÁLCULO DE DATOS EXACTOS PARA EL NOMBRE ÚNICO ---
@@ -1414,7 +1627,7 @@ class AppFractales:
             clean_name = self.nom_f.replace(" ", "_")
             
             # 4. Guardado final con la nomenclatura exacta solicitada
-            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}].png"
+            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_{ancho_px}x{alto_px}.png"
             fig_save.savefig(nombre_archivo, facecolor='black', edgecolor='none', pad_inches=0)
             plt.close(fig_save) # Liberamos memoria
             
@@ -1566,7 +1779,7 @@ class AppFractales:
                                    lug['im']-ancho_m/2, lug['im']+ancho_m/2, 
                                    self.tipo, self.it_lin, self.julia_c.real, self.julia_c.imag)
             
-            ax_min.imshow(img, cmap=self.paletas[self.idx_col % 12], origin='lower', aspect='auto')
+            ax_min.imshow(img, cmap=self.paletas[self.idx_col % len(self.paletas)], origin='lower', aspect='auto')
             ax_min.set_title(lug['nombre'], color='white', fontsize=10)
             ax_min.axis('off')
 
