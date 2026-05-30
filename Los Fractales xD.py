@@ -5,6 +5,7 @@ from matplotlib.widgets import Button, Slider, TextBox
 from numba import njit, prange
 from threading import Thread
 import time
+import math
 try:
     from PIL import Image
 except Exception:
@@ -301,7 +302,7 @@ class AppFractales:
             'autumn', 'winter'
         ]
         self.idx_col, self.it_lin, self.en_exp = 0, 4, False
-        self.hd_res = 6000
+        self.hd_res = 8000
         self.mostrar_orbita = False
         self.puntos_orbita = None
         self.controles = []
@@ -776,7 +777,7 @@ class AppFractales:
         if tipo < 3 or tipo == -1:
             # Slider de Iteraciones
             ax_it = self.fig.add_axes([0.78, 0.75, 0.17, 0.02], facecolor='#222222')
-            self.slid_it = Slider(ax_it, 'Iter ', 0, 800, valinit=self.it_pix, valfmt='%d')
+            self.slid_it = Slider(ax_it, 'Iter ', 0, 1200, valinit=self.it_pix, valfmt='%d')
             self.slid_it.label.set_color('white')
             self.slid_it.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_it.valtext.set_fontfamily('monospace')
@@ -818,8 +819,8 @@ class AppFractales:
             self.controles.append(self.btn_sm)
 
             # Slider adicional para ajustar la resolución HD de guardado (solo fractales de píxeles)
-            ax_hd = self.fig.add_axes([0.02, 0.10, 0.18, 0.03], facecolor='#222222')
-            self.slid_hd = Slider(ax_hd, 'HD Res', 1000, 8000, valinit=self.hd_res, valfmt='%d', valstep=500)
+            ax_hd = self.fig.add_axes([0.05, 0.10, 0.18, 0.03], facecolor='#222222')
+            self.slid_hd = Slider(ax_hd, 'HD Res', 500, 16000, valinit=self.hd_res, valfmt='%d', valstep=500)
             self.slid_hd.label.set_color('white')
             self.slid_hd.label.set_fontfamily('monospace')
             self.slid_hd.valtext.set_color('cyan')
@@ -930,11 +931,25 @@ class AppFractales:
             if arr is None:
                 print('No hay imagen para guardar.')
                 return
-            arrf = np.array(arr, dtype=np.float32)[::-1, :]
-            cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
-            rgba = (cmap(arrf) * 255).astype(np.uint8)
+            arr = np.array(arr)
+            if arr.ndim == 2:
+                arrf = np.array(arr, dtype=np.float32)[::-1, :]
+                cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
+                rgba = (cmap(arrf) * 255).astype(np.uint8)
+            elif arr.ndim == 3 and arr.shape[2] in (3, 4):
+                arrf = np.array(arr, dtype=np.float32)[::-1, :, :]
+                if arrf.max() <= 1.0:
+                    rgba = (np.clip(arrf, 0.0, 1.0) * 255).astype(np.uint8)
+                else:
+                    rgba = arrf.astype(np.uint8)
+                if rgba.shape[2] == 3:
+                    rgba = np.dstack([rgba, np.full(rgba.shape[:2] + (1,), 255, dtype=np.uint8)])
+            else:
+                arrf = np.array(arr, dtype=np.float32)
+                cmap = plt.get_cmap(self.paletas[self.idx_col % len(self.paletas)])
+                rgba = (cmap(arrf) * 255).astype(np.uint8)
             if filename is None:
-                fname = f"fractal_{time.strftime('%Y%m%d_%H%M%S')}.png"
+                fname = f"fractal_{time.strftime('%Y%m%d_%H%M%S')}_hue{self.val_hue:.2f}_range{self.val_color:.2f}_{self.paletas[self.idx_col % len(self.paletas)]}.png"
             else:
                 fname = filename
             def _worker(data, name):
@@ -1587,10 +1602,14 @@ class AppFractales:
             except Exception:
                 pass
         elif e.key == 'P' and self.en_exp:
+            # Dynamic tiled HD save to avoid memory spikes
             ancho_px = alto_px = int(self.hd_res)
             max_it_render = int(self.it_pix)
-            print(f"Iniciando renderizado Ultra-HD ({ancho_px}x{alto_px}) con {max_it_render} iteraciones...")
-            print("Esto puede tardar unos segundos, usaremos todos los núcleos de tu PC.")
+            max_tile = 500
+            tiles_x = math.ceil(ancho_px / max_tile)
+            tiles_y = math.ceil(alto_px / max_tile)
+            print(f"Iniciando renderizado en mosaicos {ancho_px}x{alto_px} ({tiles_x}x{tiles_y} tiles) con {max_it_render} iteraciones...")
+
             # Determine calculation mode and exponent
             jx, jy = self.julia_c.real, self.julia_c.imag
             tipo_calculo = self.tipo
@@ -1601,37 +1620,102 @@ class AppFractales:
                     tipo_calculo = 1
                 else:
                     tipo_calculo = 0
-            # generate grid and compute high-res image using specialized kernels
-            cx, cy = self._get_grid(ancho_px, alto_px)
             is_julia = (tipo_calculo == 1)
-            if tipo_calculo == 2:
-                img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
-            elif exponente_custom is not None and exponente_custom != 2.0:
-                img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
-            else:
-                img_hq = _mandelbrot_julia_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth)
-            # color adjustments (apply palette + hue rotation)
-            img_rgba_hq = self._apply_palette_and_hue(img_hq)
-            # render to a saving figure
-            fig_save = plt.figure(figsize=(ancho_px/100, alto_px/100), dpi=100, facecolor='black')
-            ax_save = fig_save.add_axes([0, 0, 1, 1])
-            ax_save.imshow(img_rgba_hq, origin='lower', aspect='auto')
-            ax_save.axis('off')
-            
-            # --- CÁLCULO DE DATOS EXACTOS PARA EL NOMBRE ÚNICO ---
+
+            # Require Pillow for tiled paste; fallback to full-save if unavailable
+            if Image is None:
+                print("Pillow no está disponible: usando método de guardado completo (puede usar mucha RAM).")
+                try:
+                    cx, cy = self._get_grid(ancho_px, alto_px)
+                    if tipo_calculo == 2:
+                        img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
+                    elif exponente_custom is not None and exponente_custom != 2.0:
+                        img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+                    else:
+                        img_hq = _mandelbrot_julia_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth)
+                    img_rgba_hq = self._apply_palette_and_hue(img_hq)
+                    fig_save = plt.figure(figsize=(ancho_px/100, alto_px/100), dpi=100, facecolor='black')
+                    ax_save = fig_save.add_axes([0, 0, 1, 1])
+                    ax_save.imshow(img_rgba_hq, origin='lower', aspect='auto')
+                    ax_save.axis('off')
+                    centro_x = (self.x_min + self.x_max) / 2
+                    centro_y = (self.y_min + self.y_max) / 2
+                    nivel_zoom = 2.0 / (self.x_max - self.x_min)
+                    clean_name = self.nom_f.replace(" ", "_")
+                    paleta_nombre = self.paletas[self.idx_col % len(self.paletas)]
+                    nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_hue-{self.val_hue:.2f}_range-{self.val_color:.2f}_pal-{paleta_nombre}_{ancho_px}x{alto_px}.png"
+                    fig_save.savefig(nombre_archivo, facecolor='black', edgecolor='none', pad_inches=0)
+                    plt.close(fig_save)
+                    print(f"TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
+                except Exception as ex:
+                    print('Error guardando imagen completa:', ex)
+                return
+
+            # Create blank canvas (RGBA)
+            canvas = Image.new('RGBA', (ancho_px, alto_px), (0, 0, 0, 255))
+
+            # Iterate tiles row-major (y then x)
+            for ty in range(tiles_y):
+                start_y = ty * max_tile
+                h_tile = min(max_tile, alto_px - start_y)
+                for tx in range(tiles_x):
+                    start_x = tx * max_tile
+                    w_tile = min(max_tile, ancho_px - start_x)
+
+                    # Map pixel tile to mathematical coordinates
+                    x0 = self.x_min + (start_x / float(ancho_px)) * (self.x_max - self.x_min)
+                    x1 = self.x_min + ((start_x + w_tile) / float(ancho_px)) * (self.x_max - self.x_min)
+                    y0 = self.y_min + (start_y / float(alto_px)) * (self.y_max - self.y_min)
+                    y1 = self.y_min + ((start_y + h_tile) / float(alto_px)) * (self.y_max - self.y_min)
+
+                    # Build coordinate grids for this tile
+                    try:
+                        x_range = np.linspace(x0, x1, w_tile, dtype=np.float64)
+                        y_range = np.linspace(y0, y1, h_tile, dtype=np.float64)
+                        cx_grid, cy_grid = np.meshgrid(x_range, y_range)
+
+                        # Render tile using Numba kernels
+                        if tipo_calculo == 2:
+                            tile = _burning_ship_njit(cx_grid, cy_grid, max_it_render, jx, jy, self.modo_smooth)
+                        elif exponente_custom is not None and exponente_custom != 2.0:
+                            tile = _exp_fractal_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+                        else:
+                            tile = _mandelbrot_julia_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth)
+
+                        # Apply palette and convert to uint8 RGBA
+
+                        rgba = self._apply_palette_and_hue(tile)
+                        data = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
+                        # Fix vertical flip per-tile: flip rows so PIL paste matches math coords
+                        data = np.flipud(data)
+                        if data.shape[2] == 4:
+                            im_tile = Image.fromarray(data, mode='RGBA')
+                        else:
+                            im_tile = Image.fromarray(data[:, :, :3], mode='RGB').convert('RGBA')
+
+                        # PIL origin is top-left; our y=0 corresponds to bottom, so flip paste Y
+                        paste_y = alto_px - (start_y + h_tile)
+                        canvas.paste(im_tile, (start_x, paste_y))
+
+                    except Exception as ex:
+                        print(f"Error renderizando tile ({tx},{ty}):", ex)
+                        continue
+
+                # quick progress update per row
+                print(f"Filas renderizadas: {ty+1}/{tiles_y}")
+
+            # Save final canvas
             centro_x = (self.x_min + self.x_max) / 2
             centro_y = (self.y_min + self.y_max) / 2
             nivel_zoom = 2.0 / (self.x_max - self.x_min)
-            
-            # Formateamos el nombre reemplazando espacios por guiones bajos
             clean_name = self.nom_f.replace(" ", "_")
-            
-            # 4. Guardado final con la nomenclatura exacta solicitada
-            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_{ancho_px}x{alto_px}.png"
-            fig_save.savefig(nombre_archivo, facecolor='black', edgecolor='none', pad_inches=0)
-            plt.close(fig_save) # Liberamos memoria
-            
-            print(f"¡TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
+            paleta_nombre = self.paletas[self.idx_col % len(self.paletas)]
+            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_hue-{self.val_hue:.2f}_range-{self.val_color:.2f}_pal-{paleta_nombre}_{ancho_px}x{alto_px}.png"
+            try:
+                canvas.save(nombre_archivo, optimize=True)
+                print(f"¡TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
+            except Exception as ex:
+                print('Error guardando canvas final:', ex)
 
         elif e.key == 'escape': 
             self.menu_principal()
