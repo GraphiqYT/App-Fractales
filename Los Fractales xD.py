@@ -19,7 +19,7 @@ def calcular_pixeles(ancho, alto, max_iter, x_min, x_max, y_min, y_max, tipo, it
     cx_grid, cy_grid = np.meshgrid(x_range, y_range)
     return _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, modo_smooth, exp_custom)
 
-@njit(parallel=True, fastmath=True)
+@njit(cache=True, parallel=True, fastmath=True)
 def _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, modo_smooth, exp_custom=2.0):
     alto, ancho = cx_grid.shape
     fractal = np.empty((alto, ancho), dtype=np.float64)
@@ -95,7 +95,7 @@ def _calcular_pixeles_njit(cx_grid, cy_grid, max_iter, tipo, it_sierp, jx, jy, m
     return fractal
 
 
-@njit(parallel=True, fastmath=True)
+@njit(cache=True, parallel=True, fastmath=True)
 def _mandelbrot_julia_njit(cx_grid, cy_grid, max_iter, is_julia, jx, jy, modo_smooth):
     alto, ancho = cx_grid.shape
     fractal = np.empty((alto, ancho), dtype=np.float64)
@@ -121,7 +121,7 @@ def _mandelbrot_julia_njit(cx_grid, cy_grid, max_iter, is_julia, jx, jy, modo_sm
     return fractal
 
 
-@njit(parallel=True, fastmath=True)
+@njit(cache=True, parallel=True, fastmath=True)
 def _burning_ship_njit(cx_grid, cy_grid, max_iter, jx, jy, modo_smooth):
     alto, ancho = cx_grid.shape
     fractal = np.empty((alto, ancho), dtype=np.float64)
@@ -144,7 +144,7 @@ def _burning_ship_njit(cx_grid, cy_grid, max_iter, jx, jy, modo_smooth):
     return fractal
 
 
-@njit(parallel=True, fastmath=True)
+@njit(cache=True, parallel=True, fastmath=True)
 def _exp_fractal_njit(cx_grid, cy_grid, max_iter, is_julia, jx, jy, modo_smooth, exp_custom):
     alto, ancho = cx_grid.shape
     fractal = np.empty((alto, ancho), dtype=np.float64)
@@ -379,6 +379,13 @@ class AppFractales:
 
         self.menu_principal()
         plt.show()
+
+        # HD render control flags and UI placeholders
+        self._hd_cancel = False
+        self.renderizando_hd = False
+        self._hd_thread = None
+        self.btn_cancel_render = None
+        self.txt_render_status = None
 
 
 
@@ -718,13 +725,22 @@ class AppFractales:
             self.btn_capturar.label.set_fontweight('bold')
             self.btn_capturar.label.set_fontsize(8)
             self.btn_capturar.on_clicked(self.capturar_coordenadas_actuales)
+            # Make the button look smoother: remove border and slightly transparent background
+            try:
+                self.btn_capturar.ax.patch.set_alpha(0.95)
+                self.btn_capturar.ax.patch.set_edgecolor('none')
+            except Exception:
+                pass
             self.controles.append(self.btn_capturar)
+
+            # Quick/HD capture buttons were removed — use keys 'p' and 'P' instead
 
             # Ocultamos los bordes estrictamente dentro del condicional donde existen las variables
             ax_x.spines[['top','bottom','left','right']].set_visible(False)
             ax_y.spines[['top','bottom','left','right']].set_visible(False)
             ax_z.spines[['top','bottom','left','right']].set_visible(False)
             ax_cap.spines[['top','bottom','left','right']].set_visible(False)
+            # (removed quick/HD capture axes)
 
             self.box_x.on_submit(self.ir_a_coords)
             self.box_y.on_submit(self.ir_a_coords)
@@ -924,12 +940,19 @@ class AppFractales:
 
     def _save_image_async(self, filename=None):
         # Grab the current image array and save it in a background thread using PIL if available
+        if getattr(self, 'renderizando_hd', False):
+            print('¡Espera! Ya hay un renderizado en progreso.')
+            return
+        self.renderizando_hd = True
+        self._set_capture_buttons_enabled(False)
         try:
             arr = None
             if hasattr(self, 'image') and self.image is not None:
                 arr = self.image.get_array()
             if arr is None:
                 print('No hay imagen para guardar.')
+                self.renderizando_hd = False
+                self._set_capture_buttons_enabled(True)
                 return
             arr = np.array(arr)
             if arr.ndim == 2:
@@ -959,12 +982,35 @@ class AppFractales:
                     else:
                         plt.imsave(name, data[:,:, :3], cmap=None)
                     print('Guardado en', name)
+                    try:
+                        if getattr(self, 'txt_info', None) is not None:
+                            self.txt_info.set_text(f"Guardado rápido: {name}")
+                            self.fig.canvas.draw_idle()
+                    except Exception:
+                        pass
                 except Exception as ex:
                     print('Error guardando imagen:', ex)
+                    try:
+                        if getattr(self, 'txt_info', None) is not None:
+                            self.txt_info.set_text(f"Error guardando rápido: {ex}")
+                            self.fig.canvas.draw_idle()
+                    except Exception:
+                        pass
+                finally:
+                    self.renderizando_hd = False
+                    self._set_capture_buttons_enabled(True)
+            if getattr(self, 'txt_info', None) is not None:
+                try:
+                    self.txt_info.set_text("Guardando imagen rápida...")
+                    self.fig.canvas.draw_idle()
+                except Exception:
+                    pass
             t = Thread(target=_worker, args=(rgba, fname), daemon=True)
             t.start()
             print('Guardado en background:', fname)
         except Exception:
+            self.renderizando_hd = False
+            self._set_capture_buttons_enabled(True)
             pass
 
     def _apply_palette_and_hue(self, img):
@@ -1584,7 +1630,45 @@ class AppFractales:
 
 
 
+    def _set_capture_buttons_enabled(self, enabled):
+        # Only toggle the main `Capturar` button visually; quick/HD buttons were removed.
+        disabled_color = '#333333'
+        disabled_hover = '#333333'
+        disabled_label = '#777777'
+        try:
+            btn = getattr(self, 'btn_capturar', None)
+            if btn is not None:
+                if enabled:
+                    # restore original gold style
+                    try:
+                        btn.ax.set_facecolor('#2b2510')
+                    except Exception:
+                        pass
+                    btn.color = '#2b2510'
+                    btn.hovercolor = '#473d1a'
+                    btn.label.set_color('#ffd700')
+                else:
+                    try:
+                        btn.ax.set_facecolor(disabled_color)
+                    except Exception:
+                        pass
+                    btn.color = disabled_color
+                    btn.hovercolor = disabled_hover
+                    btn.label.set_color(disabled_label)
+        except Exception:
+            pass
+        try:
+            self.fig.canvas.draw_idle()
+        except Exception:
+            pass
+
+    # Quick/HD capture helpers removed — use keyboard 'p' and 'P' instead
+
     def tecla(self, e):
+        if getattr(self, 'renderizando_hd', False) and e.key in ['p', 'P', 'escape']:
+            print("¡Espera! Ya hay un renderizado en progreso.")
+            return
+
         if e.key is not None and e.key.lower() == 'c':
             self.idx_col += 1
             if self.en_exp:
@@ -1602,13 +1686,15 @@ class AppFractales:
             except Exception:
                 pass
         elif e.key == 'P' and self.en_exp:
-            # Dynamic tiled HD save to avoid memory spikes
+            self.renderizando_hd = True
+            self._set_capture_buttons_enabled(False)
+            # Start HD render in a background thread to keep UI responsive
             ancho_px = alto_px = int(self.hd_res)
             max_it_render = int(self.it_pix)
             max_tile = 500
             tiles_x = math.ceil(ancho_px / max_tile)
             tiles_y = math.ceil(alto_px / max_tile)
-            print(f"Iniciando renderizado en mosaicos {ancho_px}x{alto_px} ({tiles_x}x{tiles_y} tiles) con {max_it_render} iteraciones...")
+            print(f"Iniciando renderizado en mosaicos {ancho_px}x{alto_px} ({tiles_x}x{tiles_y} tiles) con {max_it_render} iteraciones (background thread)...")
 
             # Determine calculation mode and exponent
             jx, jy = self.julia_c.real, self.julia_c.imag
@@ -1622,100 +1708,213 @@ class AppFractales:
                     tipo_calculo = 0
             is_julia = (tipo_calculo == 1)
 
-            # Require Pillow for tiled paste; fallback to full-save if unavailable
-            if Image is None:
-                print("Pillow no está disponible: usando método de guardado completo (puede usar mucha RAM).")
+            def _render_hd_background():
+                def _cleanup_ui():
+                    try:
+                        if getattr(self, 'btn_cancel_render', None) is not None:
+                            try:
+                                self.btn_cancel_render.ax.remove()
+                            except Exception:
+                                pass
+                            try:
+                                if self.btn_cancel_render in self.controles:
+                                    self.controles.remove(self.btn_cancel_render)
+                            except Exception:
+                                pass
+                            self.btn_cancel_render = None
+                        if getattr(self, 'txt_render_status', None) is not None:
+                            try:
+                                self.txt_render_status.remove()
+                            except Exception:
+                                pass
+                            self.txt_render_status = None
+                        self._set_capture_buttons_enabled(True)
+                        try:
+                            self.fig.canvas.draw_idle()
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
                 try:
-                    cx, cy = self._get_grid(ancho_px, alto_px)
-                    if tipo_calculo == 2:
-                        img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
-                    elif exponente_custom is not None and exponente_custom != 2.0:
-                        img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
-                    else:
-                        img_hq = _mandelbrot_julia_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth)
-                    img_rgba_hq = self._apply_palette_and_hue(img_hq)
-                    fig_save = plt.figure(figsize=(ancho_px/100, alto_px/100), dpi=100, facecolor='black')
-                    ax_save = fig_save.add_axes([0, 0, 1, 1])
-                    ax_save.imshow(img_rgba_hq, origin='lower', aspect='auto')
-                    ax_save.axis('off')
+                    # fallback full-save when Pillow missing
+                    if Image is None:
+                        try:
+                            cx, cy = self._get_grid(ancho_px, alto_px)
+                            if tipo_calculo == 2:
+                                img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
+                            elif exponente_custom is not None and exponente_custom != 2.0:
+                                img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+                            else:
+                                img_hq = _mandelbrot_julia_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth)
+                            img_rgba_hq = self._apply_palette_and_hue(img_hq)
+                            fig_save = plt.figure(figsize=(ancho_px/100, alto_px/100), dpi=100, facecolor='black')
+                            ax_save = fig_save.add_axes([0, 0, 1, 1])
+                            ax_save.imshow(img_rgba_hq, origin='lower', aspect='auto')
+                            ax_save.axis('off')
+                            centro_x = (self.x_min + self.x_max) / 2
+                            centro_y = (self.y_min + self.y_max) / 2
+                            nivel_zoom = 2.0 / (self.x_max - self.x_min)
+                            clean_name = self.nom_f.replace(" ", "_")
+                            paleta_nombre = self.paletas[self.idx_col % len(self.paletas)]
+                            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_hue-{self.val_hue:.2f}_range-{self.val_color:.2f}_pal-{paleta_nombre}_{ancho_px}x{alto_px}.png"
+                            fig_save.savefig(nombre_archivo, facecolor='black', edgecolor='none', pad_inches=0)
+                            plt.close(fig_save)
+                            print(f"TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
+                            try:
+                                if getattr(self, 'txt_render_status', None) is not None:
+                                    self.txt_render_status.set_text(f"Guardado completo: {nombre_archivo}")
+                                    self.fig.canvas.draw_idle()
+                            except Exception:
+                                pass
+                        except Exception as ex:
+                            print('Error guardando imagen completa:', ex)
+                        finally:
+                            _cleanup_ui()
+                        return
+
+                    # Create blank canvas (RGBA)
+                    canvas = Image.new('RGBA', (ancho_px, alto_px), (0, 0, 0, 255))
+
+                    canceled = False
+                    for ty in range(tiles_y):
+                        if getattr(self, '_hd_cancel', False):
+                            canceled = True
+                            break
+                        start_y = ty * max_tile
+                        h_tile = min(max_tile, alto_px - start_y)
+                        for tx in range(tiles_x):
+                            if getattr(self, '_hd_cancel', False):
+                                canceled = True
+                                break
+                            start_x = tx * max_tile
+                            w_tile = min(max_tile, ancho_px - start_x)
+
+                            # Map pixel tile to mathematical coordinates
+                            x0 = self.x_min + (start_x / float(ancho_px)) * (self.x_max - self.x_min)
+                            x1 = self.x_min + ((start_x + w_tile) / float(ancho_px)) * (self.x_max - self.x_min)
+                            y0 = self.y_min + (start_y / float(alto_px)) * (self.y_max - self.y_min)
+                            y1 = self.y_min + ((start_y + h_tile) / float(alto_px)) * (self.y_max - self.y_min)
+
+                            try:
+                                x_range = np.linspace(x0, x1, w_tile, dtype=np.float64)
+                                y_range = np.linspace(y0, y1, h_tile, dtype=np.float64)
+                                cx_grid, cy_grid = np.meshgrid(x_range, y_range)
+
+                                if tipo_calculo == 2:
+                                    tile = _burning_ship_njit(cx_grid, cy_grid, max_it_render, jx, jy, self.modo_smooth)
+                                elif exponente_custom is not None and exponente_custom != 2.0:
+                                    tile = _exp_fractal_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
+                                else:
+                                    tile = _mandelbrot_julia_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth)
+
+                                rgba = self._apply_palette_and_hue(tile)
+                                data = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
+                                data = np.flipud(data)
+                                if data.shape[2] == 4:
+                                    im_tile = Image.fromarray(data, mode='RGBA')
+                                else:
+                                    im_tile = Image.fromarray(data[:, :, :3], mode='RGB').convert('RGBA')
+
+                                paste_y = alto_px - (start_y + h_tile)
+                                canvas.paste(im_tile, (start_x, paste_y))
+
+                            except Exception as ex:
+                                print(f"Error renderizando tile ({tx},{ty}):", ex)
+                                continue
+
+                        # Update UI progress per row with percentage
+                        try:
+                            if getattr(self, 'txt_render_status', None) is not None:
+                                pct = int(((ty + 1) / float(tiles_y)) * 100)
+                                self.txt_render_status.set_text(f"Renderizando HD: {pct}% ({ty+1}/{tiles_y} filas)")
+                                self.fig.canvas.draw_idle()
+                        except Exception:
+                            pass
+
+                    if canceled:
+                        try:
+                            if getattr(self, 'txt_render_status', None) is not None:
+                                self.txt_render_status.set_text("Cancelado.")
+                                self.fig.canvas.draw_idle()
+                        except Exception:
+                            pass
+                        _cleanup_ui()
+                        print('Render HD cancelado por el usuario.')
+                        return
+
+                    # Save final canvas
                     centro_x = (self.x_min + self.x_max) / 2
                     centro_y = (self.y_min + self.y_max) / 2
                     nivel_zoom = 2.0 / (self.x_max - self.x_min)
                     clean_name = self.nom_f.replace(" ", "_")
                     paleta_nombre = self.paletas[self.idx_col % len(self.paletas)]
                     nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_hue-{self.val_hue:.2f}_range-{self.val_color:.2f}_pal-{paleta_nombre}_{ancho_px}x{alto_px}.png"
-                    fig_save.savefig(nombre_archivo, facecolor='black', edgecolor='none', pad_inches=0)
-                    plt.close(fig_save)
-                    print(f"TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
-                except Exception as ex:
-                    print('Error guardando imagen completa:', ex)
-                return
-
-            # Create blank canvas (RGBA)
-            canvas = Image.new('RGBA', (ancho_px, alto_px), (0, 0, 0, 255))
-
-            # Iterate tiles row-major (y then x)
-            for ty in range(tiles_y):
-                start_y = ty * max_tile
-                h_tile = min(max_tile, alto_px - start_y)
-                for tx in range(tiles_x):
-                    start_x = tx * max_tile
-                    w_tile = min(max_tile, ancho_px - start_x)
-
-                    # Map pixel tile to mathematical coordinates
-                    x0 = self.x_min + (start_x / float(ancho_px)) * (self.x_max - self.x_min)
-                    x1 = self.x_min + ((start_x + w_tile) / float(ancho_px)) * (self.x_max - self.x_min)
-                    y0 = self.y_min + (start_y / float(alto_px)) * (self.y_max - self.y_min)
-                    y1 = self.y_min + ((start_y + h_tile) / float(alto_px)) * (self.y_max - self.y_min)
-
-                    # Build coordinate grids for this tile
                     try:
-                        x_range = np.linspace(x0, x1, w_tile, dtype=np.float64)
-                        y_range = np.linspace(y0, y1, h_tile, dtype=np.float64)
-                        cx_grid, cy_grid = np.meshgrid(x_range, y_range)
-
-                        # Render tile using Numba kernels
-                        if tipo_calculo == 2:
-                            tile = _burning_ship_njit(cx_grid, cy_grid, max_it_render, jx, jy, self.modo_smooth)
-                        elif exponente_custom is not None and exponente_custom != 2.0:
-                            tile = _exp_fractal_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
-                        else:
-                            tile = _mandelbrot_julia_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth)
-
-                        # Apply palette and convert to uint8 RGBA
-
-                        rgba = self._apply_palette_and_hue(tile)
-                        data = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
-                        # Fix vertical flip per-tile: flip rows so PIL paste matches math coords
-                        data = np.flipud(data)
-                        if data.shape[2] == 4:
-                            im_tile = Image.fromarray(data, mode='RGBA')
-                        else:
-                            im_tile = Image.fromarray(data[:, :, :3], mode='RGB').convert('RGBA')
-
-                        # PIL origin is top-left; our y=0 corresponds to bottom, so flip paste Y
-                        paste_y = alto_px - (start_y + h_tile)
-                        canvas.paste(im_tile, (start_x, paste_y))
-
+                        canvas.save(nombre_archivo, optimize=True)
+                        print(f"¡TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
+                        try:
+                            if getattr(self, 'txt_render_status', None) is not None:
+                                self.txt_render_status.set_text(f"Guardado completo: {nombre_archivo}")
+                                self.fig.canvas.draw_idle()
+                        except Exception:
+                            pass
                     except Exception as ex:
-                        print(f"Error renderizando tile ({tx},{ty}):", ex)
-                        continue
+                        print('Error guardando canvas final:', ex)
+                    finally:
+                        _cleanup_ui()
+                except Exception as ex:
+                    print('Error en render HD background:', ex)
+                    try:
+                        if getattr(self, 'txt_render_status', None) is not None:
+                            self.txt_render_status.set_text(f"Error: {ex}")
+                            self.fig.canvas.draw_idle()
+                    except Exception:
+                        pass
+                    _cleanup_ui()
+                finally:
+                    self.renderizando_hd = False
 
-                # quick progress update per row
-                print(f"Filas renderizadas: {ty+1}/{tiles_y}")
-
-            # Save final canvas
-            centro_x = (self.x_min + self.x_max) / 2
-            centro_y = (self.y_min + self.y_max) / 2
-            nivel_zoom = 2.0 / (self.x_max - self.x_min)
-            clean_name = self.nom_f.replace(" ", "_")
-            paleta_nombre = self.paletas[self.idx_col % len(self.paletas)]
-            nombre_archivo = f"Fractal_Image_HD_{clean_name}_[{centro_x:.14f}_{centro_y:.14f}_{nivel_zoom:.2f}]_it-{max_it_render}_hue-{self.val_hue:.2f}_range-{self.val_color:.2f}_pal-{paleta_nombre}_{ancho_px}x{alto_px}.png"
+            # Prepare UI controls for render status and cancel (visible only during render)
             try:
-                canvas.save(nombre_archivo, optimize=True)
-                print(f"¡TERMINADO! Tu fractal HD está listo: {nombre_archivo}")
-            except Exception as ex:
-                print('Error guardando canvas final:', ex)
+                # reset cancel flag and mark render in progress
+                self._hd_cancel = False
+                self.renderizando_hd = True
+                self._set_capture_buttons_enabled(False)
+                # status text below txt_info (only during render)
+                try:
+                    self.txt_render_status = self.fig.text(0.98, 0.30, "", color='white', fontsize=10, family='monospace', ha='right', va='bottom')
+                except Exception:
+                    self.txt_render_status = None
+
+                # Cancel button near bottom-right (next to Capturar)
+                try:
+                    ax_cancel = self.fig.add_axes([0.78, 0.02, 0.12, 0.035])
+                    btn_cancel = Button(ax_cancel, 'Cancelar', color='#550000', hovercolor='#770000')
+                    btn_cancel.label.set_color('white')
+                    btn_cancel.label.set_fontfamily('monospace')
+                    btn_cancel.label.set_fontsize(9)
+                    def _on_cancel(_):
+                        self._hd_cancel = True
+                        try:
+                            if getattr(self, 'txt_render_status', None) is not None:
+                                self.txt_render_status.set_text('Cancelando...')
+                                self.fig.canvas.draw_idle()
+                        except Exception:
+                            pass
+                    btn_cancel.on_clicked(_on_cancel)
+                    self.controles.append(btn_cancel)
+                    self.btn_cancel_render = btn_cancel
+                except Exception:
+                    self.btn_cancel_render = None
+            except Exception:
+                pass
+
+            # Launch background thread
+            t = Thread(target=_render_hd_background, daemon=True)
+            self._hd_thread = t
+            t.start()
+            print('Render HD iniciado en background.')
 
         elif e.key == 'escape': 
             self.menu_principal()
