@@ -345,6 +345,8 @@ class AppFractales:
         self.it_pix = 200      # Iteraciones iniciales
         self.val_color = 1.0   # Rango de colores (1.0 = rango completo, 0.5 = mitad)
         self.val_hue = 0.0     # Rotacion de Hue (0.0 = sin cambio, 0.5 = media vuelta)
+        self.val_ilum = 1.0    # Iluminación / brillo
+        self.val_sat = 1.0     # Saturación
         self.modo_smooth = True # Smooth desactivado
         self.pan_sens = 0.05   # Sensibilidad de movimiento con flechas
 
@@ -809,8 +811,28 @@ class AppFractales:
             self.slid_hue.on_changed(self.cambiar_hue_fast)
             self.controles.append(self.slid_hue)
 
+            # Slider de Iluminación (NUEVO)
+            ax_il = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.15, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_ilum = Slider(ax_il, 'Ilum ', 0, 10.0, valinit=self.val_ilum, valstep=0.01)
+            self.slid_ilum.label.set_color('white')
+            self.slid_ilum.label.set_fontfamily('monospace')
+            self.slid_ilum.valtext.set_fontfamily('monospace')
+            self.slid_ilum.valtext.set_color('cyan')
+            self.slid_ilum.on_changed(self.cambiar_ilum_fast)
+            self.controles.append(self.slid_ilum)
+
+            # Slider de Saturación (NUEVO)
+            ax_sa = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.20, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_sat = Slider(ax_sa, 'Sat  ', -1.0, 2.0, valinit=self.val_sat, valstep=0.01)
+            self.slid_sat.label.set_color('white')
+            self.slid_sat.label.set_fontfamily('monospace')
+            self.slid_sat.valtext.set_fontfamily('monospace')
+            self.slid_sat.valtext.set_color('cyan')
+            self.slid_sat.on_changed(self.cambiar_sat_fast)
+            self.controles.append(self.slid_sat)
+
             # Botón para activar/desactivar Smooth (Estilo Premium sin bordes)
-            ax_sm = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.15, Ancho_de_los_sliders_de_la_der, 0.03])
+            ax_sm = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.25, Ancho_de_los_sliders_de_la_der, 0.03])
             txt_sm = 'Smooth: ON' if self.modo_smooth else 'Smooth: OFF'
             col_sm = '#0a2f1d' if self.modo_smooth else '#1a1a1a' # Verde tecnológico vs Gris oscuro
             col_txt = '#00ff66' if self.modo_smooth else '#888888'
@@ -1011,6 +1033,8 @@ class AppFractales:
             rgb = rgba[..., :3]
             hsv = mcolors.rgb_to_hsv(rgb)
             hsv[..., 0] = (hsv[..., 0] + float(self.val_hue)) % 1.0
+            hsv[..., 1] = np.clip(hsv[..., 1].astype(np.float32) * float(self.val_sat), 0.0, 1.0)
+            hsv[..., 2] = np.clip(hsv[..., 2].astype(np.float32) * float(self.val_ilum), 0.0, 1.0)
             rgb2 = mcolors.hsv_to_rgb(hsv)
             rgba[..., :3] = rgb2
             return rgba
@@ -1570,6 +1594,14 @@ class AppFractales:
 
     def cambiar_hue_fast(self, v):
         self.val_hue = v
+        self._schedule_preview()
+
+    def cambiar_ilum_fast(self, v):
+        self.val_ilum = v
+        self._schedule_preview()
+
+    def cambiar_sat_fast(self, v):
+        self.val_sat = v
         self._schedule_preview()
 
 
