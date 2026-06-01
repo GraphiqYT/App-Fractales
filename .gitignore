@@ -1,5 +1,5 @@
 # Ignorar imágenes y renders pesados
-#*.png
+*.png
 #*.jpg
 #*.jpeg
 

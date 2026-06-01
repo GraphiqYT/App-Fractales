@@ -342,10 +342,11 @@ class AppFractales:
         },
         self.angulo = 0.5
         
-        self.it_pix = 123      # Iteraciones iniciales
+        self.it_pix = 200      # Iteraciones iniciales
         self.val_color = 1.0   # Rango de colores (1.0 = rango completo, 0.5 = mitad)
         self.val_hue = 0.0     # Rotacion de Hue (0.0 = sin cambio, 0.5 = media vuelta)
-        self.modo_smooth = False # Smooth desactivado
+        self.modo_smooth = True # Smooth desactivado
+        self.pan_sens = 0.05   # Sensibilidad de movimiento con flechas
 
         self.formula_usuario = "Z**2 + C" # Fórmula inicial por defecto
         self.es_modo_julia = False        # False = Mandelbrot, True = Julia
@@ -372,9 +373,15 @@ class AppFractales:
 
 
         try:
-            manager.window.iconphoto(False, plt.PhotoImage(file="Los Fractales xD Icon.png"))
-        except:
-            pass 
+            # 1. Asegúrate de tener esta importación al inicio de tu archivo o aquí dentro:
+            from tkinter import PhotoImage
+            
+            # 2. Reemplaza plt.PhotoImage por PhotoImage normal
+            manager = plt.get_current_fig_manager()
+            manager.window.iconphoto(False, PhotoImage(file="Los Fractales xD Icon.png"))
+        except Exception as e:
+            # Puedes imprimir el error en la consola oculta para saber si el archivo no existe
+            print(f"No se pudo cargar el icono: {e}")
 
 
         self.menu_principal()
@@ -634,7 +641,7 @@ class AppFractales:
 
 
 
-# -E-N-V-I-A-R---P-O-R---P-A-R-T-E-S-
+
 
 
 
@@ -654,7 +661,7 @@ class AppFractales:
 
         self.fig.clf()
         self.ax = self.fig.add_subplot(111, facecolor='black')
-        self.fig.subplots_adjust(left=0.2, right=0.8, bottom=0.1, top=0.9)
+        self.fig.subplots_adjust(left=0.2, right=0.8, bottom=0.15, top=0.95)
 
         self.image = self.ax.imshow(np.zeros((2, 2)), cmap=self.paletas[self.idx_col % len(self.paletas)],
                                     origin='lower', aspect='equal', visible=False,
@@ -669,22 +676,33 @@ class AppFractales:
         self._geometric_artists = []
 
         # TEXTOS FIJOS (Subimos info_math a 0.45 para dar más espacio)
-        self.txt_help = self.fig.text(0.02, 0.5, "", color='#888888', fontsize=9, family='monospace', va='center')
-        self.txt_palette = self.fig.text(0.02, 0.92, "", color='white', fontsize=10, family='monospace')
-        self.txt_info = self.fig.text(0.98, 0.40, "", color='white', fontsize=10, 
+        # Cambiamos 0.5 por 0.43 para bajar todo el bloque de controles hacia abajo
+        self.txt_help = self.fig.text(0.02, 0.35, "", color='#888888', fontsize=8, family='monospace', va='center')
+        self.txt_palette = self.fig.text(0.02, 0.92, "", color='white', fontsize=9, family='monospace')
+        self.txt_info = self.fig.text(0.98, 0.40, "", color='white', fontsize=9, 
                                       family='monospace', ha='right', va='bottom',
                                       bbox=dict(facecolor='black', alpha=0.5, edgecolor='none'))
 
+
         # Botón Volver (Estilo minimalista)
-        ax_v = self.fig.add_axes([0.02, 0.02, 0.08, 0.04])
+        ax_v = self.fig.add_axes([0.02, 0.02, 0.10, 0.05])
         btn = Button(ax_v, '← Menú', color='#1a1a1a', hovercolor='#333333') 
         ax_v.spines[['top','bottom','left','right']].set_visible(False) # Quita el borde gris del botón
         btn.label.set_color('#aaaaaa')
         btn.label.set_fontfamily('monospace')
-        btn.label.set_fontsize(9)
+        btn.label.set_fontsize(10)
         btn.on_clicked(lambda e: self.menu_principal()); self.controles.append(btn)
 
-        
+#
+        # Slider de sensibilidad de movimiento con flechas
+        ax_pan = self.fig.add_axes([0.05, 0.15, 0.18, 0.02], facecolor='#222222')
+        self.slid_pan = Slider(ax_pan, 'Pan', 0.001, 0.5, valinit=self.pan_sens, valfmt='%.3f')
+        self.slid_pan.label.set_color('white')
+        self.slid_pan.label.set_fontfamily('monospace')
+        self.slid_pan.valtext.set_color('cyan')
+        self.slid_pan.on_changed(self.cambiar_pan_sens)
+        self.controles.append(self.slid_pan)
+
         # SLIDER: Solo para fractales geométricos (tipo 3 en adelante)
         if tipo >= 3:
             max_i = 3 if tipo == 9 else (12 if tipo == 5 else 8)
@@ -703,70 +721,36 @@ class AppFractales:
             self.txt_julia.on_submit(self.cambiar_c_julia)
             self.controles.append(self.txt_julia)
 
-        # --- CASILLAS DE NAVEGACIÓN RÁPIDA ---
+        # --- COORDENADAS (texto estático) ---
         if tipo <= 2:
-            ax_x = self.fig.add_axes([0.20, 0.02, 0.12, 0.03])
-            self.box_x = TextBox(ax_x, 'Re ', initial=f"{(self.x_min+self.x_max)/2:.2f}")
-            self.box_x.label.set_color('#ffffff')
-        
-            ax_y = self.fig.add_axes([0.35, 0.02, 0.12, 0.03])
-            self.box_y = TextBox(ax_y, 'Im ', initial=f"{(self.y_min+self.y_max)/2:.2f}")
-            self.box_y.label.set_color('#ffffff')
-        
-            ax_z = self.fig.add_axes([0.50, 0.02, 0.12, 0.03])
-            self.box_z = TextBox(ax_z, 'Zoom ', initial="1")
-            self.box_z.label.set_color('#ffffff')
+            # Texto estático que muestra las coordenadas y zoom actuales
+            cx = (self.x_min + self.x_max) / 2.0
+            cy = (self.y_min + self.y_max) / 2.0
+            zoom = 2.0 / (self.x_max - self.x_min)
+            txt = f"x = {cx:.14f}; y = {cy:.14f}; z = {zoom:.6f}"
+            self.txt_coords = self.fig.text(
+                0.5, 0.08, txt, 
+                color='white', 
+                fontsize=10, 
+                family='monospace',
+                horizontalalignment='center',  # Centrado horizontal
+                verticalalignment='center'     # Centrado vertical
+            )
 
-            # Botón Capturar (Color Oro)
-            ax_cap = self.fig.add_axes([0.65, 0.02, 0.10, 0.03])
-            self.btn_capturar = Button(ax_cap, 'Capturar', color='#2b2510', hovercolor='#473d1a')
-            self.btn_capturar.label.set_color('#ffd700') 
+            # Botón para actualizar las coordenadas mostradas
+            ax_cap = self.fig.add_axes([0.375, 0.015, 0.25, 0.04])
+            self.btn_capturar = Button(ax_cap, 'Actualizar Coordenada', color='#2b2510', hovercolor='#473d1a')
+            self.btn_capturar.label.set_color('#ffd700')
             self.btn_capturar.label.set_fontfamily('monospace')
             self.btn_capturar.label.set_fontweight('bold')
-            self.btn_capturar.label.set_fontsize(8)
+            self.btn_capturar.label.set_fontsize(9)
             self.btn_capturar.on_clicked(self.capturar_coordenadas_actuales)
-            # Make the button look smoother: remove border and slightly transparent background
             try:
                 self.btn_capturar.ax.patch.set_alpha(0.95)
                 self.btn_capturar.ax.patch.set_edgecolor('none')
             except Exception:
                 pass
             self.controles.append(self.btn_capturar)
-
-            # Quick/HD capture buttons were removed — use keys 'p' and 'P' instead
-
-            # Ocultamos los bordes estrictamente dentro del condicional donde existen las variables
-            ax_x.spines[['top','bottom','left','right']].set_visible(False)
-            ax_y.spines[['top','bottom','left','right']].set_visible(False)
-            ax_z.spines[['top','bottom','left','right']].set_visible(False)
-            ax_cap.spines[['top','bottom','left','right']].set_visible(False)
-            # (removed quick/HD capture axes)
-
-            self.box_x.on_submit(self.ir_a_coords)
-            self.box_y.on_submit(self.ir_a_coords)
-            self.box_z.on_submit(self.ir_a_coords)
-            self.controles.extend([self.box_x, self.box_y, self.box_z])
-
-
-            # --- AGREGAR ESTO JUSTO DESPUÉS DE: self.controles.extend([self.box_x, self.box_y, self.box_z]) ---
-            self.caja_activa = None
-            
-            # Rastreador de clics para saber cuál caja está activa
-            def al_hacer_clic_x(_): self.caja_activa = self.box_x
-            def al_hacer_clic_y(_): self.caja_activa = self.box_y
-            def al_hacer_clic_z(_): self.caja_activa = self.box_z
-            
-            # Conectamos el evento de clic de Matplotlib a los ejes de cada caja
-            ax_x.figure.canvas.mpl_connect('button_press_event', lambda e: al_hacer_clic_x(None) if e.inaxes == ax_x else None)
-            ax_y.figure.canvas.mpl_connect('button_press_event', lambda e: al_hacer_clic_y(None) if e.inaxes == ax_y else None)
-            ax_z.figure.canvas.mpl_connect('button_press_event', lambda e: al_hacer_clic_z(None) if e.inaxes == ax_z else None)
-
-
-
-
-
-
-# ---
 
 
 
@@ -789,11 +773,15 @@ class AppFractales:
             self.slid_ang.on_changed(self.cambiar_ang)
             self.controles.append(self.slid_ang)
 
+        X_de_los_sliders_de_la_der = 0.75
+        Y_de_los_sliders_de_la_der = 0.9
+        Ancho_de_los_sliders_de_la_der = 0.2
+
         # --- NUEVOS CONTROLES DE RENDERIZADO (Solo para fractales de píxeles) ---
         if tipo < 3 or tipo == -1:
             # Slider de Iteraciones
-            ax_it = self.fig.add_axes([0.78, 0.75, 0.17, 0.02], facecolor='#222222')
-            self.slid_it = Slider(ax_it, 'Iter ', 0, 1200, valinit=self.it_pix, valfmt='%d')
+            ax_it = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_it = Slider(ax_it, 'Iter ', 0, 10000, valinit=self.it_pix, valfmt='%d')
             self.slid_it.label.set_color('white')
             self.slid_it.label.set_fontfamily('monospace') # <-- Estilo Monospace
             self.slid_it.valtext.set_fontfamily('monospace')
@@ -802,7 +790,7 @@ class AppFractales:
             self.controles.append(self.slid_it)
 
             # Slider de Rango de Color
-            ax_c = self.fig.add_axes([0.78, 0.70, 0.17, 0.02], facecolor='#222222')
+            ax_c = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.05, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
             self.slid_col = Slider(ax_c, 'Rango ', 0.0, 1.0, valinit=self.val_color, valstep=0.01)
             self.slid_col.label.set_color('white')
             self.slid_col.label.set_fontfamily('monospace') # <-- Estilo Monospace
@@ -812,7 +800,7 @@ class AppFractales:
             self.controles.append(self.slid_col)
 
             # Slider de Hue (Rotacion de colores)
-            ax_h = self.fig.add_axes([0.78, 0.65, 0.17, 0.02], facecolor='#222222')
+            ax_h = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.10, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
             self.slid_hue = Slider(ax_h, 'Hue ', 0.0, 1.0, valinit=self.val_hue, valstep=0.01)
             self.slid_hue.label.set_color('white')
             self.slid_hue.label.set_fontfamily('monospace') # <-- Estilo Monospace
@@ -822,7 +810,7 @@ class AppFractales:
             self.controles.append(self.slid_hue)
 
             # Botón para activar/desactivar Smooth (Estilo Premium sin bordes)
-            ax_sm = self.fig.add_axes([0.78, 0.60, 0.17, 0.03])
+            ax_sm = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.15, Ancho_de_los_sliders_de_la_der, 0.03])
             txt_sm = 'Smooth: ON' if self.modo_smooth else 'Smooth: OFF'
             col_sm = '#0a2f1d' if self.modo_smooth else '#1a1a1a' # Verde tecnológico vs Gris oscuro
             col_txt = '#00ff66' if self.modo_smooth else '#888888'
@@ -834,9 +822,10 @@ class AppFractales:
             self.btn_sm.on_clicked(self.toggle_smooth)
             self.controles.append(self.btn_sm)
 
+#
             # Slider adicional para ajustar la resolución HD de guardado (solo fractales de píxeles)
             ax_hd = self.fig.add_axes([0.05, 0.10, 0.18, 0.03], facecolor='#222222')
-            self.slid_hd = Slider(ax_hd, 'HD Res', 500, 16000, valinit=self.hd_res, valfmt='%d', valstep=500)
+            self.slid_hd = Slider(ax_hd, 'HD Res', 500, 32000, valinit=self.hd_res, valfmt='%d', valstep=500)
             self.slid_hd.label.set_color('white')
             self.slid_hd.label.set_fontfamily('monospace')
             self.slid_hd.valtext.set_color('cyan')
@@ -893,8 +882,6 @@ class AppFractales:
 
 
 
-
-# -E-N-V-I-A-R---P-O-R---P-A-R-T-E-S-
 
 
 
@@ -1058,6 +1045,10 @@ class AppFractales:
         self.val_hue = v
         self.actualizar()
 
+    def cambiar_pan_sens(self, v):
+        self.pan_sens = float(v)
+        # No necesita redibujar hasta que el usuario presione una flecha
+
     def cambiar_ang(self, v):
         self.angulo = v
         self.actualizar()
@@ -1143,14 +1134,14 @@ class AppFractales:
             self._geometric_artists = []
 
 
-        # ACTUALIZAR AYUDA CON INSTRUCCIONES DE PORTAPAPELES
+        # ACTUALIZAR AYUDA CON INSTRUCCIONES DE PORTAPAPELES (actualizado)
         h_text = "CONTROLES:\n\nESC: Menú\nC / c: Cambiar paleta\nR: Reset\np: Guardar imagen\nP: Guardar imagen en HD"
-        if self.tipo < 3: 
+        if self.tipo < 3:
             h_text += "\nO: Órbita"
             h_text += "\nA: Auto-Demo (Animar)"
-            h_text += "\n\nCOPIAR COORD:\n1. Clic en casilla\n2. Ctrl + C"
-            h_text += "\n\nPEGAR COORD:\n1. Clic en casilla\n2. Ctrl + V"
-            
+            h_text += "\n\nCOPIAR COORD:\nCtrl + C  (copia centro_x,center_y,zoom)"
+            h_text += "\n\nPEGAR COORD:\nCtrl + V  (pega y centra la vista en X,Y,zoom)"
+        h_text += "\n\nMOVER VISTA:\nFlechas ←↑→↓ (sensibilidad en el slider)"
         self.txt_help.set_text(h_text)
         self.txt_palette.set_text(f"PALETA: {self.paletas[self.idx_col % len(self.paletas)]}")
 
@@ -1179,7 +1170,8 @@ class AppFractales:
             
             img_modificado = (img * self.val_color + self.val_hue) % 1.0
             try:
-                print(f"[DEBUG] actualizar tipo=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+                #print(f"[DEBUG] actualizar tipo=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+                pass
             except Exception:
                 pass
             self.image.set_data(img_modificado)
@@ -1383,7 +1375,8 @@ class AppFractales:
             
             img_rgba = self._apply_palette_and_hue(img)
             try:
-                print(f"[DEBUG] actualizar tipo!=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+                #print(f"[DEBUG] actualizar tipo!=3 img.shape={img.shape} min={img.min():.6f} max={img.max():.6f} x_min={self.x_min} x_max={self.x_max} y_min={self.y_min} y_max={self.y_max}")
+                pass
             except Exception:
                 pass
             self.image.set_data(img_rgba)
@@ -1530,7 +1523,8 @@ class AppFractales:
                 pass
             img_rgba = self._apply_palette_and_hue(img)
             try:
-                print(f"[DEBUG] preview img shape={img.shape} min={img.min():.6f} max={img.max():.6f}")
+                #print(f"[DEBUG] preview img shape={img.shape} min={img.min():.6f} max={img.max():.6f}")
+                pass
             except Exception:
                 pass
             self.image.set_data(img_rgba)
@@ -1584,18 +1578,21 @@ class AppFractales:
 
 
     def ir_a_coords(self, texto):
+        # Antes esta función leía las TextBox; ahora no existen.
+        # Conservamos la firma por compatibilidad pero no hace nada.
         try:
-            nx = float(self.box_x.text)
-            ny = float(self.box_y.text)
-            nz = float(self.box_z.text)
-            
-            ancho = 2.0 / (nz if nz > 0 else 1)
-            # Forzamos que sea un cuadrado perfecto para evitar deformaciones
-            self.x_min, self.x_max = nx - ancho/2, nx + ancho/2
-            self.y_min, self.y_max = ny - ancho/2, ny + ancho/2
-            
-            self.actualizar()
-        except:
+            # Si se usa, esperamos recibir una cadena con 'x,y,z' y la parseamos.
+            if isinstance(texto, str):
+                parts = [p.strip() for p in texto.split(',') if p.strip()!='']
+                if len(parts) >= 3:
+                    nx = float(parts[0]); ny = float(parts[1]); nz = float(parts[2])
+                    ancho = 2.0 / (nz if nz > 0 else 1)
+                    self.x_min, self.x_max = nx - ancho/2, nx + ancho/2
+                    aspect = (self.y_max - self.y_min) / (self.x_max - self.x_min)
+                    new_height = ancho * aspect
+                    self.y_min, self.y_max = ny - new_height/2, ny + new_height/2
+                    self.actualizar()
+        except Exception:
             pass
 
 
@@ -1605,24 +1602,15 @@ class AppFractales:
             centro_x = (self.x_min + self.x_max) / 2
             centro_y = (self.y_min + self.y_max) / 2
             nivel_zoom = 2.0 / (self.x_max - self.x_min)
-
-            # 2. Apagamos las señales internas para evitar que llamen a ir_a_coords
-            self.box_x.eventson = False
-            self.box_y.eventson = False
-            self.box_z.eventson = False
-
-            # 3. Forzamos la inserción de los textos usando el método nativo oficial
-            self.box_x.set_val(f"{centro_x:.14f}")
-            self.box_y.set_val(f"{centro_y:.14f}")
-            self.box_z.set_val(f"{nivel_zoom:.2f}")
-
-            # 4. Volvemos a encender las señales para cuando quieras presionar ENTER manualmente
-            self.box_x.eventson = True
-            self.box_y.eventson = True
-            self.box_z.eventson = True
-
-            # 5. Refrescamos la UI de forma pasiva
-            self.fig.canvas.draw_idle()
+            # Actualizamos el texto estático que muestra coordenadas
+            try:
+                self.txt_coords.set_text(f"x = {centro_x:.14f}; y = {centro_y:.14f}; z = {nivel_zoom:.6f}")
+            except Exception:
+                pass
+            try:
+                self.fig.canvas.draw_idle()
+            except Exception:
+                pass
 
 
 
@@ -1678,6 +1666,24 @@ class AppFractales:
         elif e.key == 'r' and self.en_exp:
             self.x_min, self.x_max, self.y_min, self.y_max = self.x_orig, self.x_max_orig, self.y_orig, self.y_max_orig
             self.actualizar()
+        elif e.key in ['up', 'down', 'left', 'right'] and self.en_exp:
+            dx = (self.x_max - self.x_min) * self.pan_sens
+            dy = (self.y_max - self.y_min) * self.pan_sens
+            if e.key == 'up':
+                self.y_min += dy
+                self.y_max += dy
+            elif e.key == 'down':
+                self.y_min -= dy
+                self.y_max -= dy
+            elif e.key == 'left':
+                self.x_min -= dx
+                self.x_max -= dx
+            elif e.key == 'right':
+                self.x_min += dx
+                self.x_max += dx
+            self.actualizar()
+            if hasattr(self, 'txt_coords'):
+                self.capturar_coordenadas_actuales(None)
         elif e.key == 'p' and self.en_exp:
             # Fast save: grab the current displayed image and save it in background
             try:
@@ -1812,7 +1818,7 @@ class AppFractales:
                                 data = (np.clip(rgba, 0.0, 1.0) * 255).astype(np.uint8)
                                 data = np.flipud(data)
                                 if data.shape[2] == 4:
-                                    im_tile = Image.fromarray(data, mode='RGBA')
+                                    im_tile = Image.fromarray(data)
                                 else:
                                     im_tile = Image.fromarray(data[:, :, :3], mode='RGB').convert('RGBA')
 
@@ -1889,7 +1895,7 @@ class AppFractales:
 
                 # Cancel button near bottom-right (next to Capturar)
                 try:
-                    ax_cancel = self.fig.add_axes([0.78, 0.02, 0.12, 0.035])
+                    ax_cancel = self.fig.add_axes([0.82, 0.02, 0.12, 0.05])
                     btn_cancel = Button(ax_cancel, 'Cancelar', color='#550000', hovercolor='#770000')
                     btn_cancel.label.set_color('white')
                     btn_cancel.label.set_fontfamily('monospace')
@@ -1934,34 +1940,66 @@ class AppFractales:
 
 
 
-        # --- SOLUCIÓN DE COPIAR Y PEGAR ACTUALIZADA ---
-        elif e.key in ['ctrl+c', 'ctrl+v'] and self.en_exp and self.tipo <= 2:
+        # --- COPIAR/PEGAR CENTRALIZADO ---
+        elif e.key in ['ctrl+c', 'ctrl+v', 'ctrl+shift+c'] and self.en_exp and self.tipo <= 2:
             import tkinter as tk
             root = tk.Tk()
-            root.withdraw() # Oculta la ventana auxiliar de Tkinter
-            
-            # Si el usuario hace Ctrl+C/V pero aún no hizo clic en ninguna caja, apuntamos a la de X por defecto
-            if not hasattr(self, 'caja_activa') or self.caja_activa is None:
-                self.caja_activa = self.box_x
-                
-            if self.caja_activa is not None:
-                if e.key == 'ctrl+c':
-                    # COPIAR AUTOMÁTICO: Como Matplotlib no deja seleccionar texto con mouse,
-                    # al presionar Ctrl+C copiamos TODO el contenido de la casilla activa directamente.
+            root.withdraw()
+
+            try:
+                if e.key == 'ctrl+c' or e.key == 'ctrl+shift+c':
+                    # Copiar centro X,Y y zoom en una sola línea
+                    centro_x = (self.x_min + self.x_max) / 2.0
+                    centro_y = (self.y_min + self.y_max) / 2.0
+                    nivel_zoom = 2.0 / (self.x_max - self.x_min)
+                    if e.key == 'ctrl+c':
+                        text = f"{centro_x:.14f},{centro_y:.14f},{nivel_zoom:.6f}"
+                    else:
+                        # Ctrl+Shift+C copia también metadatos
+                        pal = self.paletas[self.idx_col % len(self.paletas)]
+                        iters = int(self.it_pix)
+                        text = f"{centro_x:.14f},{centro_y:.14f},{nivel_zoom:.6f},it={iters},hue={self.val_hue:.6f},range={self.val_color:.6f},pal={pal}"
                     root.clipboard_clear()
-                    root.clipboard_append(self.caja_activa.text)
-                    print(f"[Portapapeles] Copiado de la casilla: {self.caja_activa.text}")
+                    root.clipboard_append(text)
+                    print(f"[Portapapeles] Copiado: {text}")
+
                 elif e.key == 'ctrl+v':
-                    # PEGAR AUTOMÁTICO: Reemplaza el texto por lo que tengas en el portapapeles
+                    # Pegar: aceptamos líneas con al menos centro_x,centro_y,zoom
                     try:
                         clipboard_text = root.clipboard_get().strip()
-                        self.caja_activa.eventson = False
-                        self.caja_activa.set_val(clipboard_text)
-                        self.caja_activa.eventson = True
-                        print(f"[Portapapeles] Pegado en la casilla: {clipboard_text}")
-                    except:
+                        parts = [p.strip() for p in clipboard_text.split(',') if p.strip()!='']
+                        if len(parts) >= 3:
+                            try:
+                                cx = float(parts[0])
+                                cy = float(parts[1])
+                                zoom = float(parts[2])
+                                # Mantener aspect ratio actual
+                                aspect = (self.y_max - self.y_min) / (self.x_max - self.x_min)
+                                new_width = 2.0 / zoom
+                                new_height = new_width * aspect
+                                self.x_min = cx - new_width / 2.0
+                                self.x_max = cx + new_width / 2.0
+                                self.y_min = cy - new_height / 2.0
+                                self.y_max = cy + new_height / 2.0
+                                # Actualizamos el texto estático de coordenadas y refrescamos
+                                try:
+                                    if hasattr(self, 'txt_coords'):
+                                        self.txt_coords.set_text(f"x = {cx:.14f}; y = {cy:.14f}; z = {zoom:.6f}")
+                                except Exception:
+                                    pass
+                                try:
+                                    self.actualizar()
+                                except Exception:
+                                    pass
+                                print(f"[Portapapeles] Pegado: {clipboard_text}")
+                            except Exception:
+                                print('[Portapapeles] Formato inválido al pegar.')
+                        else:
+                            print('[Portapapeles] No hay suficientes valores para pegar (se requieren X,Y,zoom).')
+                    except Exception:
                         pass
-            root.destroy()
+            finally:
+                root.destroy()
 
 # ---
 
@@ -1984,7 +2022,7 @@ class AppFractales:
             return
             
         # 1. Variamos sutilmente el Hue de color cíclicamente entre 0.0 y 1.0
-        self.val_hue = (self.val_hue + 0.001) % 1.0
+        self.val_hue = (self.val_hue + 0.025) % 1.0
         
         # Si el slider de Hue existe en la interfaz, actualizamos su barra visual en vivo
         if hasattr(self, 'slid_hue') and self.slid_hue in self.controles:
@@ -2000,13 +2038,13 @@ class AppFractales:
             
             # Control dinámico de límites para no romper la precisión Float64
             zoom_actual = 2.0 / ancho
-            if zoom_actual > 50000000: # Si se acerca demasiado, invertimos la marcha para alejarse
+            if zoom_actual > 500000000: # Si se acerca demasiado, invertimos la marcha para alejarse
                 self.dir_zoom = -1
             elif zoom_actual < 1.5:    # Si se aleja al tamaño original, vuelve a entrar
                 self.dir_zoom = 1
                 
-            # Factor de escala suave por cuadro (0.985 acerca, 1.015 aleja)
-            factor = 0.990 if self.dir_zoom == 1 else 1.010
+            # Factor de escala suave por cuadro (0.980 acerca, 1.020 aleja)
+            factor = 0.980 if self.dir_zoom == 1 else 1.020
             nuevo_ancho = (ancho * factor) / 2
             
             self.x_min, self.x_max = centro_x - nuevo_ancho, centro_x + nuevo_ancho
@@ -2104,12 +2142,3 @@ class AppFractales:
 
 if __name__ == "__main__":
     AppFractales()
-
-
-'''
-Lista de cosas que quiero añadir a mi codigo:
-    - Optimizacion
-    - Fractal de Newton
-    - MAS OPTIMIZACION
-    - Otras cosas
-    '''
