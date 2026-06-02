@@ -324,7 +324,11 @@ class AppFractales:
             11: ("Curva de Hilbert", "Curva que llena el espacio", "D = 2.0"),
             12: ("Fractal de Vicsek", "Estructura auto-similar en Cruz", "D ≈ 1.46"),
             13: ("Copo Hexagonal", "Sierpinski Hexflake simétrico", "D ≈ 1.77")
-        }
+            51: ("Ecuacion personalizada 1 xd", r"$Z_{n+1} = \sin(Z_n) \cdot C$", "D ≈ 2.0"),
+            52: ("Ecuacion personalizada 2 xd", r"$Z_{n+1} = Z_n^5 + C$", "D ≈ 2.0"),
+            53: ("Ecuacion personalizada 3 xd", r"$Z_{n+1} = \sin(Z_n)^2 + \cos(C)^3$", "D Variable")
+
+                }
         self.fig.canvas.mpl_connect('scroll_event', self.zoom)
         self.fig.canvas.mpl_connect('key_press_event', self.tecla)
         self.fig.canvas.mpl_connect('motion_notify_event', self.on_mouse)
@@ -347,10 +351,17 @@ class AppFractales:
         self.val_hue = 0.0     # Rotacion de Hue (0.0 = sin cambio, 0.5 = media vuelta)
         self.val_ilum = 1.0    # Iluminación / brillo
         self.val_sat = 1.0     # Saturación
+        self.val_contrast = 1.0 # Contraste
+        self.val_gamma = 1.0    # Corrección gamma
+        self.mostrar_rejilla = False
+        self.color_rejilla = '#ffffff'
+        self.alpha_rejilla = 0.5
+        self.lineas_rejilla = []
         self.modo_smooth = True # Smooth desactivado
         self.pan_sens = 0.05   # Sensibilidad de movimiento con flechas
 
         self.formula_usuario = "Z**2 + C" # Fórmula inicial por defecto
+        self.formula_texto_libre = self.formula_usuario
         self.es_modo_julia = False        # False = Mandelbrot, True = Julia
         self.custom_c = complex(-0.7, 0.27) # Constante inicial si usa modo Julia
 
@@ -823,7 +834,7 @@ class AppFractales:
 
             # Slider de Saturación (NUEVO)
             ax_sa = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.20, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
-            self.slid_sat = Slider(ax_sa, 'Sat  ', -1.0, 2.0, valinit=self.val_sat, valstep=0.01)
+            self.slid_sat = Slider(ax_sa, 'Sat  ', 0.0, 1.0, valinit=self.val_sat, valstep=0.01)
             self.slid_sat.label.set_color('white')
             self.slid_sat.label.set_fontfamily('monospace')
             self.slid_sat.valtext.set_fontfamily('monospace')
@@ -831,8 +842,58 @@ class AppFractales:
             self.slid_sat.on_changed(self.cambiar_sat_fast)
             self.controles.append(self.slid_sat)
 
+            # Botón premium de Rejilla
+            ax_rj = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.40, Ancho_de_los_sliders_de_la_der * 0.62, 0.03], facecolor='#222222')
+            txt_rj = 'Rejilla: ON' if self.mostrar_rejilla else 'Rejilla: OFF'
+            col_rj = '#0a2f1d' if self.mostrar_rejilla else '#1a1a1a'
+            txt_color_rj = '#00ff66' if self.mostrar_rejilla else '#888888'
+            self.btn_rejilla = Button(ax_rj, txt_rj, color=col_rj, hovercolor='#252525')
+            ax_rj.spines[['top','bottom','left','right']].set_visible(False)
+            self.btn_rejilla.label.set_color(txt_color_rj)
+            self.btn_rejilla.label.set_fontfamily('monospace')
+            self.btn_rejilla.label.set_fontsize(9)
+            self.btn_rejilla.on_clicked(self.toggle_rejilla)
+            self.controles.append(self.btn_rejilla)
+
+            ax_cl = self.fig.add_axes([X_de_los_sliders_de_la_der + Ancho_de_los_sliders_de_la_der * 0.64, Y_de_los_sliders_de_la_der-0.40, Ancho_de_los_sliders_de_la_der * 0.36, 0.03], facecolor='#222222')
+            self.btn_color_rejilla = Button(ax_cl, 'Color', color='#222222', hovercolor='#444444')
+            self.btn_color_rejilla.label.set_color('cyan')
+            self.btn_color_rejilla.label.set_fontfamily('monospace')
+            self.btn_color_rejilla.label.set_fontsize(8)
+            self.btn_color_rejilla.on_clicked(self.seleccionar_color_rejilla)
+            self.controles.append(self.btn_color_rejilla)
+
+            ax_alpha = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.45, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_alpha_rejilla = Slider(ax_alpha, 'Alfa ', 0.0, 1.0, valinit=self.alpha_rejilla, valstep=0.01)
+            self.slid_alpha_rejilla.label.set_color('white')
+            self.slid_alpha_rejilla.label.set_fontfamily('monospace')
+            self.slid_alpha_rejilla.valtext.set_fontfamily('monospace')
+            self.slid_alpha_rejilla.valtext.set_color('cyan')
+            self.slid_alpha_rejilla.on_changed(self.cambiar_alpha_rejilla_fast)
+            self.controles.append(self.slid_alpha_rejilla)
+
+            # Slider de Contraste (NUEVO)
+            ax_co = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.25, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_contrast = Slider(ax_co, 'Contr', 0.1, 3.0, valinit=self.val_contrast, valstep=0.01)
+            self.slid_contrast.label.set_color('white')
+            self.slid_contrast.label.set_fontfamily('monospace')
+            self.slid_contrast.valtext.set_fontfamily('monospace')
+            self.slid_contrast.valtext.set_color('cyan')
+            self.slid_contrast.on_changed(self.cambiar_contrast_fast)
+            self.controles.append(self.slid_contrast)
+
+            # Slider de Gama (NUEVO)
+            ax_ga = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.30, Ancho_de_los_sliders_de_la_der, 0.02], facecolor='#222222')
+            self.slid_gamma = Slider(ax_ga, 'Gama ', 0.1, 3.0, valinit=self.val_gamma, valstep=0.01)
+            self.slid_gamma.label.set_color('white')
+            self.slid_gamma.label.set_fontfamily('monospace')
+            self.slid_gamma.valtext.set_fontfamily('monospace')
+            self.slid_gamma.valtext.set_color('cyan')
+            self.slid_gamma.on_changed(self.cambiar_gamma_fast)
+            self.controles.append(self.slid_gamma)
+
             # Botón para activar/desactivar Smooth (Estilo Premium sin bordes)
-            ax_sm = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.25, Ancho_de_los_sliders_de_la_der, 0.03])
+            ax_sm = self.fig.add_axes([X_de_los_sliders_de_la_der, Y_de_los_sliders_de_la_der-0.50, Ancho_de_los_sliders_de_la_der, 0.03])
             txt_sm = 'Smooth: ON' if self.modo_smooth else 'Smooth: OFF'
             col_sm = '#0a2f1d' if self.modo_smooth else '#1a1a1a' # Verde tecnológico vs Gris oscuro
             col_txt = '#00ff66' if self.modo_smooth else '#888888'
@@ -909,6 +970,7 @@ class AppFractales:
 
     def cambiar_formula_custom(self, texto):
         self.formula_usuario = texto.strip()
+        self.formula_texto_libre = self.formula_usuario
         # Actualizamos el texto LaTeX visual arriba a la izquierda
         f_latex = r"$Z_{n+1} = " + self.formula_usuario.replace("**", "^") + "$"
         self.txt_latex_visual.set_text(f_latex)
@@ -1034,7 +1096,9 @@ class AppFractales:
             hsv = mcolors.rgb_to_hsv(rgb)
             hsv[..., 0] = (hsv[..., 0] + float(self.val_hue)) % 1.0
             hsv[..., 1] = np.clip(hsv[..., 1].astype(np.float32) * float(self.val_sat), 0.0, 1.0)
-            hsv[..., 2] = np.clip(hsv[..., 2].astype(np.float32) * float(self.val_ilum), 0.0, 1.0)
+            hsv[..., 2] = np.clip(np.power(hsv[..., 2].astype(np.float32), float(self.val_contrast)), 0.0, 1.0)
+            hsv[..., 2] = np.clip(np.power(hsv[..., 2], 1.0 / max(float(self.val_gamma), 0.01)), 0.0, 1.0)
+            hsv[..., 2] = np.clip(hsv[..., 2] * float(self.val_ilum), 0.0, 1.0)
             rgb2 = mcolors.hsv_to_rgb(hsv)
             rgba[..., :3] = rgb2
             return rgba
@@ -1381,7 +1445,9 @@ class AppFractales:
             # Use cached grid + specialized kernels when possible
             cx, cy = self._get_grid(600, 600)
             is_julia = (tipo_calculo == 1)
-            if tipo_calculo == 2:
+            if self.tipo == -1:
+                img = self.render_formula_libre(600, 600)
+            elif tipo_calculo == 2:
                 img = _burning_ship_njit(cx, cy, max_it_actual, jx, jy, self.modo_smooth)
             elif exponente_custom is not None and exponente_custom != 2.0:
                 img = _exp_fractal_njit(cx, cy, max_it_actual, is_julia, jx, jy, self.modo_smooth, exponente_custom)
@@ -1451,6 +1517,7 @@ class AppFractales:
                 self.image.set_visible(True)
         except Exception:
             pass
+        self.dibujar_rejilla()
         self.fig.canvas.draw_idle()
 
 
@@ -1603,6 +1670,106 @@ class AppFractales:
     def cambiar_sat_fast(self, v):
         self.val_sat = v
         self._schedule_preview()
+
+    def cambiar_alpha_rejilla_fast(self, v):
+        self.alpha_rejilla = float(v)
+        self.dibujar_rejilla()
+        self.fig.canvas.draw_idle()
+
+    def toggle_rejilla(self, event):
+        self.mostrar_rejilla = not self.mostrar_rejilla
+        txt_rj = 'Rejilla: ON' if self.mostrar_rejilla else 'Rejilla: OFF'
+        col_rj = '#0a2f1d' if self.mostrar_rejilla else '#1a1a1a'
+        txt_color_rj = '#00ff66' if self.mostrar_rejilla else '#888888'
+        if hasattr(self, 'btn_rejilla'):
+            self.btn_rejilla.label.set_text(txt_rj)
+            try:
+                self.btn_rejilla.ax.set_facecolor(col_rj)
+            except Exception:
+                pass
+            try:
+                self.btn_rejilla.color = col_rj
+            except Exception:
+                pass
+            self.btn_rejilla.label.set_color(txt_color_rj)
+        self.dibujar_rejilla()
+        self.fig.canvas.draw_idle()
+
+    def seleccionar_color_rejilla(self, _):
+        try:
+            from tkinter.colorchooser import askcolor
+            _, hexcolor = askcolor(color=self.color_rejilla, title='Seleccionar color de rejilla')
+            if hexcolor:
+                self.color_rejilla = hexcolor
+                self.dibujar_rejilla()
+                self.fig.canvas.draw_idle()
+        except Exception as e:
+            print(f'No se pudo abrir el selector de color: {e}')
+
+    def cambiar_contrast_fast(self, v):
+        self.val_contrast = v
+        self._schedule_preview()
+
+    def cambiar_gamma_fast(self, v):
+        self.val_gamma = v
+        self._schedule_preview()
+
+    def render_formula_libre(self, ancho, alto, x_min=None, x_max=None, y_min=None, y_max=None):
+        try:
+            x_min = self.x_min if x_min is None else x_min
+            x_max = self.x_max if x_max is None else x_max
+            y_min = self.y_min if y_min is None else y_min
+            y_max = self.y_max if y_max is None else y_max
+
+            x = np.linspace(x_min, x_max, ancho, dtype=np.float64)
+            y = np.linspace(y_min, y_max, alto, dtype=np.float64)
+            X, Y = np.meshgrid(x, y)
+            C = X + 1j * Y
+            if self.es_modo_julia:
+                Z = C.copy()
+                C = np.full_like(Z, complex(self.custom_c.real, self.custom_c.imag))
+            else:
+                Z = np.zeros_like(C)
+
+            escape = np.full(Z.shape, self.it_pix, dtype=np.int32)
+            mask = np.ones(Z.shape, dtype=bool)
+            for i in range(self.it_pix):
+                try:
+                    contexto = {'np': np, 'Z': Z, 'C': C, 'math': math}
+                    Z = eval(self.formula_texto_libre, contexto)
+                except Exception:
+                    break
+                escaped = np.abs(Z) > 2.0
+                newly_escaped = escaped & mask
+                escape[newly_escaped] = i
+                mask &= ~escaped
+                if not mask.any():
+                    break
+            return escape.astype(np.float32) / max(1.0, float(self.it_pix))
+        except Exception:
+            return np.zeros((alto, ancho), dtype=np.float32)
+
+    def dibujar_rejilla(self):
+        try:
+            for linea in self.lineas_rejilla:
+                try:
+                    linea.remove()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        self.lineas_rejilla = []
+        if not getattr(self, 'mostrar_rejilla', False):
+            return
+        if not hasattr(self, 'ax') or self.ax is None:
+            return
+        for i in range(1, 8):
+            pos = i * 0.125
+            lw = 2.0 if abs(pos - 0.5) < 1e-9 else 0.6
+            line_v, = self.ax.plot([pos, pos], [0.0, 1.0], color=self.color_rejilla, alpha=self.alpha_rejilla, linewidth=lw, transform=self.ax.transAxes, clip_on=False, zorder=10)
+            line_h, = self.ax.plot([0.0, 1.0], [pos, pos], color=self.color_rejilla, alpha=self.alpha_rejilla, linewidth=lw, transform=self.ax.transAxes, clip_on=False, zorder=10)
+            self.lineas_rejilla.append(line_v)
+            self.lineas_rejilla.append(line_h)
 
 
 
@@ -1779,7 +1946,9 @@ class AppFractales:
                     if Image is None:
                         try:
                             cx, cy = self._get_grid(ancho_px, alto_px)
-                            if tipo_calculo == 2:
+                            if self.tipo == -1:
+                                img_hq = self.render_formula_libre(ancho_px, alto_px)
+                            elif tipo_calculo == 2:
                                 img_hq = _burning_ship_njit(cx, cy, max_it_render, jx, jy, self.modo_smooth)
                             elif exponente_custom is not None and exponente_custom != 2.0:
                                 img_hq = _exp_fractal_njit(cx, cy, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
@@ -1839,7 +2008,11 @@ class AppFractales:
                                 y_range = np.linspace(y0, y1, h_tile, dtype=np.float64)
                                 cx_grid, cy_grid = np.meshgrid(x_range, y_range)
 
-                                if tipo_calculo == 2:
+                                if self.tipo == -1:
+                                    tile = calcular_pixeles(w_tile, h_tile, max_it_render, x0, x1,
+                                                            y0, y1, -1, self.it_lin,
+                                                            jx, jy, self.modo_smooth, 2.0, self.formula_texto_libre)
+                                elif tipo_calculo == 2:
                                     tile = _burning_ship_njit(cx_grid, cy_grid, max_it_render, jx, jy, self.modo_smooth)
                                 elif exponente_custom is not None and exponente_custom != 2.0:
                                     tile = _exp_fractal_njit(cx_grid, cy_grid, max_it_render, is_julia, jx, jy, self.modo_smooth, exponente_custom)
